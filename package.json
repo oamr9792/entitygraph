@@ -1,0 +1,18 @@
+{
+  "name": "entitygraph",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Entity Association Intelligence: patent-inspired association scoring over an observed web corpus, with historical/current/Google-retrieval state separation.",
+  "type": "module",
+  "engines": {
+    "node": ">=22.5.0"
+  },
+  "scripts": {
+    "start": "node --disable-warning=ExperimentalWarning server.js",
+    "dev": "node --disable-warning=ExperimentalWarning --watch server.js",
+    "demo": "node --disable-warning=ExperimentalWarning scripts/demo.js",
+    "reset": "node --disable-warning=ExperimentalWarning scripts/reset.js",
+    "test": "node --disable-warning=ExperimentalWarning --test"
+  },
+  "dependencies": {}
+}

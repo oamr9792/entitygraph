@@ -1,0 +1,209 @@
+import { h, api, fmt, disclaimer, toast, navigate, sortableTable } from '../app.js';
+
+/** §74 — the manual review queue for the 0.40–0.69 confidence band. */
+export async function reviewView({ params }) {
+  const data = await api(`/api/entities/${params.id}/review-queue?limit=100`);
+  const reviews = await api(`/api/entities/${params.id}/reviews`);
+
+  const decide = async (documentId, verdict) => {
+    try {
+      await api('/api/review', {
+        method: 'POST',
+        body: { entity_id: Number(params.id), action: verdict === 'accept' ? 'right_entity' : 'wrong_entity', document_id: documentId },
+      });
+      toast(verdict === 'accept' ? 'Accepted — scores updated' : 'Rejected — scores updated', 'success');
+      location.reload();
+    } catch (err) {
+      toast(err.message, 'error');
+    }
+  };
+
+  const rows = data.queue.map((r) => h('div', { class: 'panel' },
+    h('div', { class: 'panel-body' },
+      h('div', { class: 'toolbar' },
+        h('span', { class: 'chip warn' }, `confidence ${r.entity_confidence}`),
+        h('a', { href: r.url, target: '_blank', rel: 'noopener noreferrer' }, r.root_domain),
+        h('span', { class: 'small dim' }, fmt.date(r.published_at ?? r.group_date)),
+        h('span', { class: 'spacer' }),
+        h('button', { class: 'small', onclick: () => decide(r.document_id, 'accept') }, 'Right person'),
+        h('button', { class: 'small danger', onclick: () => decide(r.document_id, 'reject') }, 'Wrong person')
+      ),
+      h('div', { style: { fontWeight: 600, marginBottom: '0.3rem' } }, r.title ?? '(untitled)'),
+      h('div', { class: 'evidence-text', style: { maxWidth: 'none' } }, (r.snippet ?? '').slice(0, 400)),
+      h('div', { class: 'small dim', style: { marginTop: '0.4rem' } },
+        'Signals: ',
+        (Array.isArray(r.reasons) ? r.reasons : []).map((x) =>
+          h('span', { class: 'chip', style: { marginRight: '0.25rem' } },
+            `${x.kind}${x.value ? `: ${String(x.value).slice(0, 40)}` : ''}${x.contribution !== undefined ? ` ${x.contribution > 0 ? '+' : ''}${x.contribution}` : ''}`))
+      )
+    )
+  ));
+
+  return h('div', {},
+    h('div', { class: 'page-head' },
+      h('div', {},
+        h('h1', {}, 'Review queue'),
+        h('div', { class: 'sub' },
+          `Documents scoring between ${data.thresholds.review} and ${data.thresholds.accept} for identity. They contribute nothing to any score until a human decides (§8).`)
+      )
+    ),
+    disclaimer(),
+    data.queue.length ? rows : h('div', { class: 'panel' }, h('div', { class: 'empty' }, 'Nothing awaiting review.')),
+    reviews.reviews?.length
+      ? h('div', { class: 'panel' },
+          h('h2', {}, 'Correction history'),
+          h('div', { class: 'panel-body tight' },
+            h('table', {}, h('tbody', {}, reviews.reviews.slice(0, 40).map((r) => h('tr', {},
+              h('td', { class: 'small dim' }, fmt.date(r.created_at)),
+              h('td', {}, h('span', { class: 'chip' }, r.action.replace(/_/g, ' '))),
+              h('td', { class: 'small muted' }, `${r.target_kind} #${r.target_id}`),
+              h('td', { class: 'small dim' }, r.reviewer)
+            ))))
+          )
+        )
+      : null
+  );
+}
+
+/** §7 — the identity profile, editable, because §6 depends on it. */
+export async function identityView({ params }) {
+  const data = await api(`/api/entities/${params.id}`);
+  const { profile, search_queries: queries } = data;
+
+  const addMarker = async (kind, value, polarity = 1) => {
+    try {
+      await api(`/api/entities/${params.id}/markers`, { method: 'POST', body: { kind, value, polarity } });
+      toast('Marker added — rebuild or rescore to apply it', 'success');
+      location.reload();
+    } catch (err) { toast(err.message, 'error'); }
+  };
+
+  const removeMarker = async (markerId) => {
+    try {
+      await api(`/api/entities/${params.id}/markers/${markerId}`, { method: 'DELETE' });
+      toast('Marker removed', 'success');
+      location.reload();
+    } catch (err) { toast(err.message, 'error'); }
+  };
+
+  const kindSelect = h('select', { style: { width: '10rem' } },
+    ['organization', 'location', 'occupation', 'education', 'person', 'url', 'other'].map((k) => h('option', { value: k }, k)));
+  const valueInput = h('input', { type: 'text', placeholder: 'ABC Capital', style: { width: '16rem' } });
+  const polaritySelect = h('select', { style: { width: '9rem' } },
+    h('option', { value: '1' }, 'confirms'), h('option', { value: '-1' }, 'rules out'));
+
+  return h('div', {},
+    h('div', { class: 'page-head' },
+      h('div', {}, h('h1', {}, `${profile.canonical_name} — identity profile`),
+        h('div', { class: 'sub' }, 'Association scoring on the wrong entity is worse than no scoring. These facts decide which documents count.'))
+    ),
+    disclaimer(),
+    h('div', { class: 'split-2' },
+      h('div', { class: 'panel' },
+        h('h2', {}, 'Identity markers'),
+        h('div', { class: 'panel-body tight' },
+          h('table', {}, h('tbody', {}, profile.markers.map((m) => h('tr', {},
+            h('td', {}, h('span', { class: `chip ${m.polarity === -1 ? 'bad' : ''}` }, m.kind)),
+            h('td', {}, m.value),
+            h('td', { class: 'num dim small' }, `weight ${m.weight}`),
+            h('td', { class: 'num' }, h('button', { class: 'small danger', onclick: () => removeMarker(m.id) }, 'remove'))
+          )))),
+          h('div', { class: 'toolbar', style: { padding: '0.7rem' } },
+            kindSelect, valueInput, polaritySelect,
+            h('button', {
+              onclick: () => valueInput.value.trim() && addMarker(kindSelect.value, valueInput.value.trim(), Number(polaritySelect.value)),
+            }, 'Add')
+          )
+        )
+      ),
+      h('div', { class: 'panel' },
+        h('h2', {}, 'Names searched (§10)'),
+        h('div', { class: 'panel-body' },
+          h('p', { class: 'small muted' }, 'Every alias is queried as an exact phrase and the results merged; duplicate URLs are counted once.'),
+          queries.map((q) => h('div', { class: 'mono small', style: { padding: '0.1rem 0' } }, `"${q}"`)),
+          h('p', { class: 'small dim', style: { marginTop: '0.8rem', marginBottom: 0 } },
+            `Type: ${profile.entity_type}${profile.wikidata_qid ? ` · Wikidata ${profile.wikidata_qid}` : ''}`)
+        )
+      )
+    )
+  );
+}
+
+/** Job progress and the §66 cost ledger. */
+export async function jobsView({ params }) {
+  const [entity, jobs, usage] = await Promise.all([
+    api(`/api/entities/${params.id}`),
+    api(`/api/jobs?entity_id=${params.id}`),
+    api(`/api/usage?entity_id=${params.id}`),
+  ]);
+
+  const build = async (options) => {
+    try {
+      await api(`/api/entities/${params.id}/build`, { method: 'POST', body: { options } });
+      toast('Build queued', 'success');
+      setTimeout(() => location.reload(), 800);
+    } catch (err) { toast(err.message, 'error'); }
+  };
+
+  const rescore = async () => {
+    try {
+      const res = await api(`/api/entities/${params.id}/rescore`, { method: 'POST', body: {} });
+      toast(`Rescored ${res.rescored} evidence rows`, 'success');
+      navigate(`#/entities/${params.id}`);
+    } catch (err) { toast(err.message, 'error'); }
+  };
+
+  const jobPanels = jobs.jobs.map((job) => h('div', { class: 'panel' },
+    h('h2', {},
+      `Job #${job.id} · ${job.kind}`,
+      h('span', { class: `chip ${job.status === 'done' ? 'good' : job.status === 'failed' ? 'bad' : 'warn'}` }, job.status)
+    ),
+    h('div', { class: 'panel-body' },
+      h('div', { class: 'small dim', style: { marginBottom: '0.5rem' } },
+        `${fmt.date(job.created_at)} · ${job.steps_done}/${job.steps_total} steps · $${(job.cost_usd ?? 0).toFixed(4)}`),
+      job.error ? h('p', { class: 'sentiment negative' }, job.error) : null,
+      h('div', { class: 'progress' }, (job.progress ?? []).filter((p) => p.step).map((p) =>
+        h('div', { class: `step ${p.status}` },
+          h('span', { class: 'mark' }, p.status === 'done' ? '✓' : p.status === 'skipped' ? '–' : '…'),
+          h('span', { style: { minWidth: '15rem' } }, p.step),
+          h('span', { class: 'detail' }, p.detail ?? '')
+        )
+      )),
+      job.status === 'running' || job.status === 'queued'
+        ? h('button', { class: 'small danger', style: { marginTop: '0.6rem' },
+            onclick: async () => { await api(`/api/jobs/${job.id}/cancel`, { method: 'POST' }); location.reload(); } }, 'Cancel')
+        : null
+    )
+  ));
+
+  return h('div', {},
+    h('div', { class: 'page-head' },
+      h('div', {}, h('h1', {}, 'Jobs & cost'),
+        h('div', { class: 'sub' }, `Spend on this entity so far: $${(entity.spend?.costUsd ?? 0).toFixed(4)} · ${fmt.n(entity.spend?.tokens)} LLM tokens`)),
+      h('div', { class: 'toolbar' },
+        h('button', { onclick: rescore, title: 'Recompute scores from stored evidence. No provider calls, no cost.' }, 'Rescore only'),
+        h('button', { onclick: () => build({ skipSerp: true }) }, 'Rebuild (no SERP)'),
+        h('button', { class: 'primary', onclick: () => build({}) }, 'Full rebuild')
+      )
+    ),
+    disclaimer(),
+    usage.by_provider?.length
+      ? h('div', { class: 'panel' },
+          h('h2', {}, 'API usage (§66)'),
+          h('div', { class: 'panel-body tight' },
+            sortableTable([
+              { key: 'provider', label: 'Provider' },
+              { key: 'endpoint', label: 'Endpoint' },
+              { key: 'calls', label: 'Calls', num: true },
+              { key: 'cached', label: 'Cached', num: true },
+              { key: 'tokens_in', label: 'Tokens in', num: true, render: (r) => fmt.n(r.tokens_in) },
+              { key: 'tokens_out', label: 'Tokens out', num: true, render: (r) => fmt.n(r.tokens_out) },
+              { key: 'failures', label: 'Failures', num: true },
+              { key: 'cost_usd', label: 'Cost', num: true, render: (r) => `$${(r.cost_usd ?? 0).toFixed(4)}` },
+            ], usage.by_provider, { initialSort: 'cost_usd' })
+          )
+        )
+      : null,
+    jobs.jobs.length ? jobPanels : h('div', { class: 'panel' }, h('div', { class: 'empty' }, 'No jobs yet.'))
+  );
+}
