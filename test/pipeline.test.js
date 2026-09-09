@@ -245,3 +245,48 @@ test('a rescore is deterministic: running it twice changes nothing', async () =>
   const second = leaderboard(entityId).associations.map((a) => [a.label, a.pias, a.current_pias]);
   assert.deepEqual(second, first);
 });
+
+/**
+ * Regression: a rebuild after a canonicalisation pass used to die on
+ * `UNIQUE constraint failed: associations.entity_id, canonical_label, kind`.
+ *
+ * upsertAssociation looked up with `status != 'merged'` while the UNIQUE index
+ * covers every row whatever its status, so re-extracting a label that survived
+ * only as a merged row missed the lookup and collided on insert. Since every
+ * build canonicalises and every rebuild re-extracts, this broke the second
+ * build of any entity — the normal workflow.
+ */
+test('re-extracting a merged label returns the survivor instead of colliding', async () => {
+  const { upsertAssociation } = await import('../src/services/canonicalize.js');
+  const { get, run } = await import('../src/db.js');
+
+  const loser = upsertAssociation(entityId, { canonical_label: 'Charitable Giving', kind: 'concept' });
+  const winner = upsertAssociation(entityId, { canonical_label: 'Philanthropy', kind: 'concept' });
+  assert.notEqual(loser, winner);
+
+  run(
+    `UPDATE associations SET status = 'merged', merged_into_id = ? WHERE id = ?`,
+    winner,
+    loser
+  );
+
+  // The exact call the extractor makes on the next build.
+  const again = upsertAssociation(entityId, { canonical_label: 'Charitable Giving', kind: 'concept' });
+  assert.equal(again, winner, 'evidence for a merged label belongs on the association it was merged into');
+
+  // And a chain of merges resolves to the end of the chain, not one hop along.
+  const third = upsertAssociation(entityId, { canonical_label: 'Good Works', kind: 'concept' });
+  run(`UPDATE associations SET status = 'merged', merged_into_id = ? WHERE id = ?`, loser, third);
+  assert.equal(
+    upsertAssociation(entityId, { canonical_label: 'Good Works', kind: 'concept' }),
+    winner,
+    'a merge chain must resolve to the final survivor'
+  );
+
+  // A self-referential pointer must not hang the pipeline.
+  const cyclic = upsertAssociation(entityId, { canonical_label: 'Loop Test', kind: 'concept' });
+  run(`UPDATE associations SET status = 'merged', merged_into_id = ? WHERE id = ?`, cyclic, cyclic);
+  assert.equal(upsertAssociation(entityId, { canonical_label: 'Loop Test', kind: 'concept' }), cyclic);
+
+  assert.ok(get(`SELECT 1 AS ok`), 'database still usable');
+});

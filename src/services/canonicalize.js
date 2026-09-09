@@ -32,27 +32,67 @@ export function upsertAssociation(entityId, { canonical_label, kind, category = 
   // Match on the normalised key rather than the literal label, so
   // "Philanthropies" and "philanthropy" land on the same row without any
   // clustering pass at all.
+  //
+  // Merged rows are searched too, and deliberately so. The UNIQUE index covers
+  // every row whatever its status, so skipping merged ones does not avoid a
+  // collision — it guarantees one. A rebuild after a canonicalisation pass
+  // re-extracts a label that now survives only as a merged row, the lookup
+  // misses it, and the insert fails. Following the merge instead is also the
+  // right answer semantically: that label was judged to be this other thing,
+  // so its evidence belongs on the survivor.
   const existing = all(
-    `SELECT * FROM associations WHERE entity_id = ? AND kind = ? AND status != 'merged'`,
+    `SELECT * FROM associations WHERE entity_id = ? AND kind = ?`,
     entityId,
     kind
   ).find((a) => labelKey(a.canonical_label) === key);
 
   if (existing) {
-    if (existing.category === 'other' && category !== 'other') {
-      run(`UPDATE associations SET category = ?, updated_at = datetime('now') WHERE id = ?`, category, existing.id);
+    const target = resolveMergeTarget(existing);
+    if (target.category === 'other' && category !== 'other') {
+      run(`UPDATE associations SET category = ?, updated_at = datetime('now') WHERE id = ?`, category, target.id);
     }
-    return existing.id;
+    return target.id;
   }
 
-  const res = run(
-    `INSERT INTO associations (entity_id, canonical_label, kind, category) VALUES (?, ?, ?, ?)`,
+  // ON CONFLICT rather than a bare INSERT: two labels can normalise to
+  // different keys and still be byte-identical after whitespace normalisation,
+  // and this path runs from a concurrent pool. A collision here should return
+  // the existing row, not kill the build.
+  run(
+    `INSERT INTO associations (entity_id, canonical_label, kind, category) VALUES (?, ?, ?, ?)
+     ON CONFLICT(entity_id, canonical_label, kind)
+     DO UPDATE SET updated_at = datetime('now')`,
     entityId,
     label,
     kind,
     category
   );
-  return Number(res.lastInsertRowid);
+  const row = get(
+    `SELECT * FROM associations WHERE entity_id = ? AND canonical_label = ? AND kind = ?`,
+    entityId,
+    label,
+    kind
+  );
+  return row ? resolveMergeTarget(row).id : null;
+}
+
+/**
+ * Follows merged_into_id to the surviving association. Merges can chain when
+ * A is merged into B and B is later merged into C, so this walks rather than
+ * dereferencing once, with a visited set because a mis-set pointer must not
+ * hang the pipeline.
+ */
+function resolveMergeTarget(association) {
+  let current = association;
+  const seen = new Set([current.id]);
+  while (current.status === 'merged' && current.merged_into_id) {
+    if (seen.has(current.merged_into_id)) break;
+    const next = get(`SELECT * FROM associations WHERE id = ?`, current.merged_into_id);
+    if (!next) break;
+    seen.add(next.id);
+    current = next;
+  }
+  return current;
 }
 
 export function recordSurfaceForm(associationId, surfaceForm) {
