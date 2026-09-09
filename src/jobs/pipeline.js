@@ -415,8 +415,12 @@ const HANDLERS = {
         }
       }
 
+      // Every document, not every tenth. A build that is working steadily and
+      // one that has hung look identical when the counter only moves ten at a
+      // time — and a user watching a frozen number will cancel a healthy run,
+      // which is exactly what happened.
       processed += 1;
-      if (processed % 10 === 0) await ctx.heartbeat?.({ step: 'extract_associations', processed, of: docs.length, evidenceRows });
+      await ctx.heartbeat?.({ step: 'extract_associations', processed, of: docs.length, evidenceRows });
     });
 
     state.counts.evidence = evidenceRows;

@@ -42,6 +42,8 @@ const PRICING = {
 // Models that removed the sampling parameters.
 const NO_SAMPLING = /^claude-(opus-5|opus-4-[678]|sonnet-5|fable-5|mythos-5)/;
 
+const LLM_TIMEOUT_MS = 120000;
+
 /**
  * Adapts a plain JSON Schema to the strict-tool dialect.
  *
@@ -136,6 +138,11 @@ export const anthropicProvider = {
       ...(NO_SAMPLING.test(model) ? {} : { temperature: 0 }),
     };
 
+    // Extraction calls are legitimately slower than the general HTTP default —
+    // a few thousand tokens of reasoning takes as long as it takes — so they
+    // get a longer ceiling. But a call that has already blown through it is
+    // usually stuck rather than slow, and retrying it three times holds a pool
+    // slot for minutes while the run appears frozen. Wait longer, retry less.
     const res = await request('anthropic', API_URL, {
       method: 'POST',
       headers: {
@@ -144,7 +151,7 @@ export const anthropicProvider = {
         'content-type': 'application/json',
       },
       body: JSON.stringify(body),
-    });
+    }, { retries: 1, timeoutMs: LLM_TIMEOUT_MS });
 
     // A safety decline is an HTTP 200 with stop_reason "refusal", not an error.
     if (res?.stop_reason === 'refusal') {
