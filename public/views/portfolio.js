@@ -1,4 +1,28 @@
-import { h, api, fmt, toast, navigate, sortableTable, disclaimer } from '../app.js';
+import { h, api, fmt, toast, navigate, sortableTable, disclaimer, onTeardown } from '../app.js';
+
+/**
+ * One chip that says what actually happened to the last build.
+ *
+ * `entities.status` alone is not enough: it says 'error' long after a later
+ * build succeeded, and says nothing at all while one is in progress. The last
+ * job is what someone looking at this screen wants to know about, and a failed
+ * one carries its reason in the tooltip rather than hiding it in the job log.
+ */
+function buildChip(row) {
+  const job = row.last_job_status;
+  if (job === 'running' || job === 'queued') {
+    const step = row.last_job_step ? String(row.last_job_step).replace(/_/g, ' ') : '';
+    return h('span', { class: 'chip warn', title: step },
+      job === 'queued' ? 'queued' : `building ${row.last_job_steps_done ?? 0}/${row.last_job_steps_total ?? 12}`);
+  }
+  if (job === 'failed') {
+    return h('span', { class: 'chip bad', title: row.last_job_error ?? 'no error recorded' }, 'build failed');
+  }
+  if (job === 'cancelled') {
+    return h('span', { class: 'chip warn', title: 'the last build was cancelled before it finished' }, 'cancelled');
+  }
+  return h('span', { class: `chip ${row.status === 'ready' ? 'good' : row.status === 'error' ? 'bad' : 'warn'}` }, row.status);
+}
 
 /** The entity list. */
 export async function portfolioView() {
@@ -20,7 +44,15 @@ export async function portfolioView() {
     [
       { key: 'canonical_name', label: 'Entity', render: (r) => h('a', { href: `#/entities/${r.id}` }, r.canonical_name) },
       { key: 'entity_type', label: 'Type', render: (r) => h('span', { class: 'chip' }, r.entity_type) },
-      { key: 'status', label: 'Status', render: (r) => h('span', { class: `chip ${r.status === 'ready' ? 'good' : r.status === 'error' ? 'bad' : 'warn'}` }, r.status) },
+      {
+        key: 'status',
+        label: 'Status',
+        // The build's state, not just the entity's. A build that died and one
+        // that is still running were indistinguishable from this screen, which
+        // is how a failure gets read as "still working" for five minutes.
+        render: (r) => buildChip(r),
+        sortValue: (r) => r.last_job_status ?? r.status,
+      },
       { key: 'documents', label: 'Documents', num: true, render: (r) => fmt.n(r.documents) },
       { key: 'associations', label: 'Associations', num: true, render: (r) => fmt.n(r.associations) },
       { key: 'spend', label: 'Spend', num: true, sortValue: (r) => r.spend?.costUsd ?? 0, render: (r) => `$${(r.spend?.costUsd ?? 0).toFixed(3)}` },
@@ -29,6 +61,30 @@ export async function portfolioView() {
     entities,
     { initialSort: 'updated_at' }
   );
+
+  // While any build is live, keep this screen honest without a manual refresh.
+  // Re-rendering only on an actual status change, so the table does not reset
+  // the user's chosen sort every two seconds.
+  if (entities.some((e) => e.last_job_status === 'running' || e.last_job_status === 'queued')) {
+    const signature = () => entities.map((e) => `${e.id}:${e.last_job_status}:${e.last_job_steps_done}`).join('|');
+    let previous = signature();
+    let stopped = false;
+    const tick = async () => {
+      if (stopped) return;
+      try {
+        const fresh = await api('/api/entities');
+        const next = fresh.entities.map((e) => `${e.id}:${e.last_job_status}:${e.last_job_steps_done}`).join('|');
+        if (next !== previous) {
+          previous = next;
+          navigate(location.hash || '#/');
+          return;
+        }
+      } catch { /* a failed poll is not worth surfacing; try again */ }
+      timer = setTimeout(tick, 2500);
+    };
+    let timer = setTimeout(tick, 2500);
+    onTeardown(() => { stopped = true; clearTimeout(timer); });
+  }
 
   return h('div', {},
     h('div', { class: 'page-head' },

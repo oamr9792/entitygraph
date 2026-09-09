@@ -11,7 +11,11 @@ entityRoutes.get('/api/entities', (req, res) => {
     `SELECT e.*,
             (SELECT COUNT(*) FROM entity_document_matches m WHERE m.entity_id = e.id AND m.verdict = 'accept') AS documents,
             (SELECT COUNT(*) FROM associations a WHERE a.entity_id = e.id AND a.status = 'active') AS associations,
-            (SELECT status FROM crawl_jobs j WHERE j.entity_id = e.id ORDER BY j.id DESC LIMIT 1) AS last_job_status
+            (SELECT status FROM crawl_jobs j WHERE j.entity_id = e.id ORDER BY j.id DESC LIMIT 1) AS last_job_status,
+            (SELECT step FROM crawl_jobs j WHERE j.entity_id = e.id ORDER BY j.id DESC LIMIT 1) AS last_job_step,
+            (SELECT steps_done FROM crawl_jobs j WHERE j.entity_id = e.id ORDER BY j.id DESC LIMIT 1) AS last_job_steps_done,
+            (SELECT steps_total FROM crawl_jobs j WHERE j.entity_id = e.id ORDER BY j.id DESC LIMIT 1) AS last_job_steps_total,
+            (SELECT error FROM crawl_jobs j WHERE j.entity_id = e.id ORDER BY j.id DESC LIMIT 1) AS last_job_error
        FROM entities e WHERE e.deleted_at IS NULL ORDER BY e.created_at DESC`
   );
   ok(res, { entities: rows.map((e) => ({ ...e, spend: spendForEntity(e.id) })) });
