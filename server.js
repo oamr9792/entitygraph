@@ -1,5 +1,6 @@
 import http from 'node:http';
 import config, { SCORE_DISCLAIMER } from './src/config.js';
+import { installTrustStore } from './src/tls-trust.js';
 import { Router, fail, json, serveStatic, serveIndex } from './src/http.js';
 import { recoverOrphanedJobs } from './src/jobs/queue.js';
 import { llmStatus } from './src/providers/llm/index.js';
@@ -13,6 +14,13 @@ const router = new Router();
 for (const group of [entityRoutes, analysisRoutes, evidenceRoutes]) {
   router.routes.push(...group.routes);
 }
+
+// Before anything can make an outbound call: pick up any locally-installed CA
+// certificates. TLS-inspecting antivirus and corporate proxies re-sign HTTPS
+// with their own CA, which the OS trusts but Node only sees if
+// NODE_EXTRA_CA_CERTS was set before the process started. Loading them here
+// means the app works regardless of how it was launched.
+const trust = installTrustStore(config.extraCaCerts);
 
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
@@ -59,6 +67,13 @@ server.listen(config.port, config.host, () => {
     `  extraction: ${llm.available ? `${llm.configured_provider} (${llm.model})` : `no LLM key — falling back to the deterministic heuristic extractor`}`
   );
   console.log(`  ceilings:   ${config.limits.maxDocuments} documents, $${config.limits.maxApiCostUsd} per entity`);
+  if (trust.applied) {
+    for (const { file, certificates } of trust.added) {
+      console.log(`  tls:        trusting ${certificates} local CA certificate(s) from ${file}`);
+    }
+  } else if (trust.added?.length) {
+    console.warn(`  tls:        found local CA certificates but could not install them: ${trust.reason}`);
+  }
   console.log('');
   console.log(`  ${SCORE_DISCLAIMER}`);
   console.log('');

@@ -1,4 +1,4 @@
-import { h, api, fmt, sortableTable, disclaimer, navigate, sentimentClass } from '../app.js';
+import { h, api, fmt, sortableTable, disclaimer, navigate, sentimentClass, buildStatus } from '../app.js';
 
 /** §49 — the global time control, shared by every screen that takes a window. */
 export function timeControl(query, { extra = null } = {}) {
@@ -49,10 +49,14 @@ export async function dashboardView({ params, query }) {
   const { state, leaderboard: board, coverage, narrative, alerts } = data;
 
   if (!board?.associations?.length) {
+    // The status strip carries the reason: a build in progress, or the error
+    // that stopped one. An empty dashboard with no explanation is the thing
+    // that makes a failed build look like a slow one.
     return h('div', {},
       h('div', { class: 'page-head' }, h('div', {}, h('h1', {}, board?.entity?.canonical_name ?? 'Entity'))),
+      buildStatus(params.id),
       h('div', { class: 'panel' }, h('div', { class: 'empty' },
-        h('p', {}, 'No associations yet — run a build, or check the job log for why the last one found nothing.'),
+        h('p', {}, 'No associations yet. If no build is running above, start one — or open the job log to see what the last one did.'),
         h('button', { onclick: () => navigate(`#/entities/${params.id}/jobs`) }, 'Jobs & cost')
       ))
     );
@@ -177,6 +181,7 @@ export async function dashboardView({ params, query }) {
         h('button', { onclick: () => navigate(`#/entities/${params.id}/jobs`) }, 'Rebuild')
       )
     ),
+    buildStatus(params.id),
     disclaimer(data.disclaimer),
     stateRow,
     h('div', { style: { height: '1.1rem' } }),

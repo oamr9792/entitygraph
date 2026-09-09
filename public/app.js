@@ -124,6 +124,110 @@ export function sortableTable(columns, rows, { initialSort = null, initialDesc =
   return wrap;
 }
 
+// --- Live build status ------------------------------------------------------
+
+/**
+ * Timers and pollers registered by a view, torn down when the user navigates.
+ * Without this a poller started on the dashboard keeps running — and keeps
+ * re-rendering — after you have moved to another screen.
+ */
+const teardowns = [];
+export function onTeardown(fn) { teardowns.push(fn); }
+
+function runTeardowns() {
+  while (teardowns.length) {
+    try { teardowns.pop()(); } catch { /* a failed teardown must not block navigation */ }
+  }
+}
+
+/**
+ * The build-status strip. A long build used to look identical to a dead one:
+ * the page rendered once, said "running", and never changed — so a job that
+ * failed thirteen seconds in still read as in-progress five minutes later.
+ *
+ * This polls while a job is live, shows the step it is on, and re-renders the
+ * screen once it finishes so the results appear on their own. A failed job
+ * shows its error here rather than only in the job log, because the error is
+ * the reason the screen the user is looking at is empty.
+ */
+export function buildStatus(entityId, { pollMs = 2000 } = {}) {
+  const strip = h('div', {});
+  let lastStatus = null;
+  let stopped = false;
+
+  const paint = (job) => {
+    if (!job || job.status === 'done' || job.status === 'cancelled') { clear(strip); return; }
+
+    if (job.status === 'failed') {
+      clear(strip).append(
+        h('div', { class: 'banner bad' },
+          h('div', { class: 'banner-head' },
+            h('strong', {}, `Build failed at step ${job.steps_done + 1} of ${job.steps_total}`),
+            h('span', { class: 'small dim' }, job.step ? ` · ${job.step}` : '')
+          ),
+          h('p', { class: 'banner-body' }, job.error ?? 'No error recorded.'),
+          h('div', { class: 'banner-actions' },
+            h('button', { class: 'small', onclick: () => retry(entityId) }, 'Retry build'),
+            h('button', { class: 'small ghost', onclick: () => navigate(`#/entities/${entityId}/jobs`) }, 'Job log')
+          )
+        )
+      );
+      return;
+    }
+
+    const pct = job.steps_total ? Math.round((job.steps_done / job.steps_total) * 100) : 0;
+    clear(strip).append(
+      h('div', { class: 'banner warn' },
+        h('div', { class: 'banner-head' },
+          h('strong', {}, job.status === 'queued' ? 'Build queued' : `Building · step ${job.steps_done + 1} of ${job.steps_total}`),
+          h('span', { class: 'small dim' }, job.step ? ` · ${job.step.replace(/_/g, ' ')}` : '')
+        ),
+        h('div', { class: 'bar' }, h('div', { class: 'bar-fill', style: { width: `${pct}%` } })),
+        h('div', { class: 'banner-actions' },
+          h('span', { class: 'small dim' }, `$${(job.cost_usd ?? 0).toFixed(4)} spent so far`),
+          h('button', { class: 'small ghost', onclick: () => navigate(`#/entities/${entityId}/jobs`) }, 'Details')
+        )
+      )
+    );
+  };
+
+  const retry = async (id) => {
+    try {
+      await api(`/api/entities/${id}/build`, { method: 'POST', body: {} });
+      toast('Build queued', 'success');
+      poll();
+    } catch (err) { toast(err.message, 'error'); }
+  };
+
+  const poll = async () => {
+    if (stopped) return;
+    try {
+      const { jobs } = await api(`/api/jobs?entity_id=${entityId}&limit=1`);
+      const job = jobs?.[0] ?? null;
+      paint(job);
+      const live = job && (job.status === 'running' || job.status === 'queued');
+      // A build that has just finished leaves the screen showing the empty
+      // state it rendered before the data existed. Re-render once, on the
+      // transition, so results appear without the user reloading.
+      if (lastStatus && lastStatus !== job?.status && job?.status === 'done') {
+        toast('Build complete', 'success');
+        render();
+        return;
+      }
+      lastStatus = job?.status ?? null;
+      if (live) timer = setTimeout(poll, pollMs);
+    } catch {
+      // Polling failures are not worth a toast on every tick; try again.
+      if (!stopped) timer = setTimeout(poll, pollMs * 3);
+    }
+  };
+
+  let timer = null;
+  onTeardown(() => { stopped = true; clearTimeout(timer); });
+  poll();
+  return strip;
+}
+
 // --- Routing ----------------------------------------------------------------
 
 const routes = [];
@@ -150,6 +254,7 @@ function matchRoute(path) {
 }
 
 async function render() {
+  runTeardowns();
   const app = document.getElementById('app');
   const raw = location.hash.replace(/^#/, '') || '/';
   const [path, queryString] = raw.split('?');

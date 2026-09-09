@@ -257,3 +257,64 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
   .split-2 { grid-template-columns: 1fr; }
   .main { padding: 1rem; }
 }
+
+/* --- Build status strip ---------------------------------------------------
+   A build in progress and a build that died thirteen seconds in used to look
+   identical: an empty screen. This is the difference. */
+.banner {
+  border: 1px solid var(--line);
+  border-left-width: 3px;
+  border-radius: 6px;
+  padding: 0.7rem 0.9rem;
+  margin-bottom: 1rem;
+  background: var(--panel);
+}
+.banner.warn { border-left-color: var(--warn); }
+.banner.bad { border-left-color: var(--bad); }
+.banner-head { display: flex; align-items: baseline; gap: 0.4rem; }
+.banner-body {
+  margin: 0.45rem 0 0;
+  color: var(--muted);
+  font-size: 0.85rem;
+  line-height: 1.5;
+  white-space: pre-wrap;
+}
+.banner-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-top: 0.6rem;
+}
+.bar {
+  height: 4px;
+  border-radius: 2px;
+  background: var(--line);
+  overflow: hidden;
+  margin-top: 0.55rem;
+}
+.bar-fill {
+  height: 100%;
+  background: var(--warn);
+  transition: width 0.4s ease;
+}
+
+/* --- Build ceilings (§66) -------------------------------------------------- */
+.ceiling-row {
+  display: flex;
+  align-items: flex-end;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+.ceiling-row label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  font-size: 0.78rem;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+input.ceiling {
+  width: 9rem;
+  font-family: var(--mono);
+}

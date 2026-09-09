@@ -8,7 +8,7 @@ import { llmStatus } from '../providers/llm/index.js';
 import { listProviders } from '../providers/corpus/index.js';
 import '../providers/corpus/providers.js';
 import * as dfs from '../providers/dataforseo.js';
-import { SCORE_DISCLAIMER, MODEL } from '../config.js';
+import config, { SCORE_DISCLAIMER, MODEL } from '../config.js';
 
 export const evidenceRoutes = new Router();
 
@@ -254,6 +254,10 @@ evidenceRoutes.get('/api/settings', async (req, res) => {
   ok(res, {
     disclaimer: SCORE_DISCLAIMER,
     model: MODEL,
+    // The system-wide ceilings (§66). Shown as placeholders wherever a
+    // per-entity ceiling can be set, so "blank" reads as a value rather than
+    // as "no limit".
+    limits: config.limits,
     llm: llmStatus(),
     corpus_providers: listProviders(),
     dataforseo_configured: dfs.isConfigured(),

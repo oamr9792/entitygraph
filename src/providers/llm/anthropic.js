@@ -42,6 +42,41 @@ const PRICING = {
 // Models that removed the sampling parameters.
 const NO_SAMPLING = /^claude-(opus-5|opus-4-[678]|sonnet-5|fable-5|mythos-5)/;
 
+/**
+ * Adapts a plain JSON Schema to the strict-tool dialect.
+ *
+ * Strict mode rejects any object type that does not explicitly set
+ * `additionalProperties: false`, and it requires every declared property to
+ * appear in `required`. Both are easy to forget when writing a schema by hand
+ * — and the resulting 400 arrives at extraction time, which on a real build is
+ * after the corpus has already been paid for. Normalising here means the
+ * extraction prompts stay readable and cannot make that mistake.
+ *
+ * Optional fields are expressed the way strict mode wants them: still listed
+ * in `required`, but with `null` unioned into the type.
+ */
+export function strictify(schema) {
+  if (!schema || typeof schema !== 'object') return schema;
+  if (Array.isArray(schema)) return schema.map(strictify);
+
+  const out = { ...schema };
+  for (const key of ['anyOf', 'oneOf', 'allOf']) {
+    if (Array.isArray(out[key])) out[key] = out[key].map(strictify);
+  }
+  if (out.items) out.items = strictify(out.items);
+
+  if (out.type === 'object' || out.properties) {
+    if (out.properties) {
+      out.properties = Object.fromEntries(
+        Object.entries(out.properties).map(([name, sub]) => [name, strictify(sub)])
+      );
+      out.required = Object.keys(out.properties);
+    }
+    out.additionalProperties = false;
+  }
+  return out;
+}
+
 export function estimateCost(model, usage = {}) {
   const price = PRICING[model] ?? PRICING['claude-opus-5'];
   const input = usage.input_tokens ?? 0;
@@ -62,8 +97,9 @@ export const anthropicProvider = {
   available: () => Boolean(config.llm.anthropicKey),
 
   /**
-   * One structured call. `schema` is a JSON Schema object describing the
-   * result; the parsed, validated tool input comes back as `data`.
+   * One structured call. `schema` is a plain JSON Schema; `strictify` adapts
+   * it to the strict-tool dialect before sending. The parsed, validated tool
+   * input comes back as `data`.
    *
    * `cacheSystem` puts a cache breakpoint at the end of the system prompt.
    * Extraction sends the same system prompt (taxonomy + identity profile) for
@@ -91,7 +127,7 @@ export const anthropicProvider = {
         {
           name: schemaName,
           description: schemaDescription || `Return the extraction result as ${schemaName}.`,
-          input_schema: schema,
+          input_schema: strictify(schema),
           strict: true,
         },
       ],

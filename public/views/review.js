@@ -1,4 +1,4 @@
-import { h, api, fmt, disclaimer, toast, navigate, sortableTable } from '../app.js';
+import { h, api, fmt, disclaimer, toast, navigate, sortableTable, state } from '../app.js';
 
 /** §74 — the manual review queue for the 0.40–0.69 confidence band. */
 export async function reviewView({ params }) {
@@ -131,19 +131,61 @@ export async function identityView({ params }) {
 
 /** Job progress and the §66 cost ledger. */
 export async function jobsView({ params }) {
+  const defaults = state.settings?.limits ?? { maxDocuments: 4000, maxApiCostUsd: 25 };
   const [entity, jobs, usage] = await Promise.all([
     api(`/api/entities/${params.id}`),
     api(`/api/jobs?entity_id=${params.id}`),
     api(`/api/usage?entity_id=${params.id}`),
   ]);
 
+  /**
+   * §66 — the ceilings, editable here rather than only at entity creation.
+   * This is the screen where someone decides to spend money, so it is the
+   * screen that has to let them decide how much. Saved before the build is
+   * queued, because the pipeline reads them off the entity when it starts.
+   */
+  const ceilingInput = (name, value, placeholder) =>
+    h('input', { type: 'number', name, value: value ?? '', placeholder, min: '1', class: 'ceiling' });
+
+  const docsField = ceilingInput('max_documents', entity.entity?.max_documents, String(defaults.maxDocuments));
+  const costField = ceilingInput('max_api_cost_usd', entity.entity?.max_api_cost_usd, String(defaults.maxApiCostUsd));
+
+  const saveCeilings = async () => {
+    const body = {
+      max_documents: docsField.value ? Number(docsField.value) : null,
+      max_api_cost_usd: costField.value ? Number(costField.value) : null,
+    };
+    await api(`/api/entities/${params.id}`, { method: 'PATCH', body });
+    return body;
+  };
+
   const build = async (options) => {
     try {
+      const ceilings = await saveCeilings();
       await api(`/api/entities/${params.id}/build`, { method: 'POST', body: { options } });
-      toast('Build queued', 'success');
-      setTimeout(() => location.reload(), 800);
+      toast(`Build queued · ceiling ${ceilings.max_documents ?? defaults.maxDocuments} documents`, 'success');
+      navigate(`#/entities/${params.id}`);
     } catch (err) { toast(err.message, 'error'); }
   };
+
+  const settingsPanel = h('div', { class: 'panel' },
+    h('h2', {}, 'Build ceilings'),
+    h('div', { class: 'panel-body' },
+      h('p', { class: 'small dim', style: { marginTop: 0 } },
+        'Checked before every provider call, so a build stops rather than overruns. Leave blank to use the system default. A first build on a common name is worth running small — the disambiguation is easier to judge on 400 documents than on 4,000.'),
+      h('div', { class: 'ceiling-row' },
+        h('label', {}, 'Documents', docsField),
+        h('label', {}, 'Cost (USD)', costField),
+        h('button', {
+          class: 'small',
+          onclick: async () => {
+            try { await saveCeilings(); toast('Ceilings saved', 'success'); }
+            catch (err) { toast(err.message, 'error'); }
+          },
+        }, 'Save')
+      )
+    )
+  );
 
   const rescore = async () => {
     try {
@@ -187,6 +229,7 @@ export async function jobsView({ params }) {
       )
     ),
     disclaimer(),
+    settingsPanel,
     usage.by_provider?.length
       ? h('div', { class: 'panel' },
           h('h2', {}, 'API usage (§66)'),

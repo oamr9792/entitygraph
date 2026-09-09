@@ -1,6 +1,7 @@
 import { all, get, run } from '../db.js';
 import { runPipeline, STEPS } from './pipeline.js';
 import { spendForEntity } from '../providers/http-client.js';
+import { diagnoseNetworkError } from '../tls-trust.js';
 
 /**
  * A single-worker job queue.
@@ -121,10 +122,16 @@ async function execute(job) {
     );
   } catch (err) {
     cancelled.delete(job.id);
+    // A raw OpenSSL code tells an analyst nothing. When the failure is about
+    // this machine rather than the request — an antivirus web shield, a
+    // corporate proxy, dead DNS — say which, and what to do about it.
+    const diagnosis = diagnoseNetworkError(err.message);
+    const message = diagnosis ? `${diagnosis.message}\n\nUnderlying error: ${err.message}` : err.message;
     console.error(`[job ${job.id}] failed:`, err.message);
+    if (diagnosis) console.error(`[job ${job.id}] diagnosis: ${diagnosis.kind}`);
     run(
       `UPDATE crawl_jobs SET status = 'failed', finished_at = datetime('now'), error = ? WHERE id = ?`,
-      String(err.message).slice(0, 1000),
+      String(message).slice(0, 1000),
       job.id
     );
   }
