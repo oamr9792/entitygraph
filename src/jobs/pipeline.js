@@ -5,7 +5,7 @@ import { searchAcross } from '../providers/corpus/index.js';
 import '../providers/corpus/providers.js'; // registers the four providers
 import * as dfs from '../providers/dataforseo.js';
 import { ingestCandidates, recordVersion } from '../services/ingest.js';
-import { fetchPageText, storeBody } from '../services/fetch.js';
+import { fetchPageText, storeBody, mapPool } from '../services/fetch.js';
 import { scoreDocument, adjudicate, saveMatch } from '../services/disambiguation.js';
 import { buildWindows, extractFromWindow } from '../services/extraction.js';
 import { upsertAssociation, recordSurfaceForm, canonicaliseAssociations, applyDefaultHierarchy } from '../services/canonicalize.js';
@@ -223,9 +223,22 @@ const HANDLERS = {
 
     let fetched = 0;
     let failed = 0;
-    for (const doc of docs) {
-      if (ctx.shouldStop?.()) break;
-      const res = await fetchPageText(doc.url, { entityId: state.entity.id, jobId: ctx.jobId });
+    let fallbacks = 0;
+    // The DataForSEO content-parsing fallback is a billed call. Letting it fire
+    // on every unreachable page turns a free failure into a paid one, hundreds
+    // of times over, for documents that already have a usable snippet. Spend it
+    // on the best-ranked documents and let the rest fall back to the snippet.
+    const fallbackBudget = state.options.fallbackBudget ?? 25;
+
+    await mapPool(docs, state.options.fetchConcurrency ?? 8, async (doc) => {
+      if (ctx.shouldStop?.()) return;
+      const allowProviderFallback = fallbacks < fallbackBudget;
+      if (allowProviderFallback) fallbacks += 1;
+      const res = await fetchPageText(doc.url, {
+        entityId: state.entity.id,
+        jobId: ctx.jobId,
+        allowProviderFallback,
+      });
       if (res.ok) {
         const stored = storeBody(doc.id, res.text);
         recordVersion(doc.id, { contentHash: contentHash(stored), bodyChars: stored.length, publishedAt: doc.published_at });
@@ -235,7 +248,8 @@ const HANDLERS = {
         failed += 1;
       }
       await ctx.heartbeat?.({ step: 'fetch_evidence_windows', fetched, failed, of: docs.length });
-    }
+    });
+
     state.counts.fetched = fetched;
     return `${fetched} pages fetched, ${failed} unavailable, ${state.documentIds.length - docs.length} left on snippet only`;
   },
@@ -313,11 +327,16 @@ const HANDLERS = {
     let discarded = 0;
     let processed = 0;
 
-    for (const doc of docs) {
-      if (ctx.shouldStop?.()) break;
+    // Documents are independent: each deletes and rewrites only its own
+    // evidence rows. Windows within a document stay sequential, because their
+    // order is what assigns occurrence_index and therefore drives §32's
+    // repetition cap. Concurrency is modest — this is the step that spends
+    // money, and a provider rate-limit error costs more than it saves.
+    await mapPool(docs, state.options.extractConcurrency ?? 5, async (doc) => {
+      if (ctx.shouldStop?.()) return;
       const text = [doc.title, doc.snippet, doc.body_text].filter(Boolean).join('\n\n');
       const windows = buildWindows(text, aliases, { maxWindows: state.options.windowsPerDocument ?? 3 });
-      if (!windows.length) continue;
+      if (!windows.length) return;
 
       run(`DELETE FROM evidence WHERE entity_id = ? AND document_id = ? AND manually_verified = 0`, state.entity.id, doc.id);
       const perAssociationCount = new Map();
@@ -397,8 +416,8 @@ const HANDLERS = {
       }
 
       processed += 1;
-      if (processed % 25 === 0) await ctx.heartbeat?.({ step: 'extract_associations', processed, of: docs.length, evidenceRows });
-    }
+      if (processed % 10 === 0) await ctx.heartbeat?.({ step: 'extract_associations', processed, of: docs.length, evidenceRows });
+    });
 
     state.counts.evidence = evidenceRows;
     return `${evidenceRows} evidence rows from ${processed} documents${discarded ? `; ${discarded} unsupported associations discarded` : ''}`;

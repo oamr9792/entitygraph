@@ -49,6 +49,10 @@ export const listJobs = (entityId = null, limit = 25) =>
   ).map((j) => ({ ...j, options: safeParse(j.options, {}), progress: safeParse(j.progress, []) }));
 
 export function cancelJob(jobId) {
+  // Logged because a cancelled build is otherwise indistinguishable from one
+  // that stopped on its own, and the difference matters when someone is asking
+  // why their results are missing.
+  console.log(`[job ${jobId}] cancel requested`);
   const job = get(`SELECT * FROM crawl_jobs WHERE id = ?`, jobId);
   if (!job) return null;
   if (job.status === 'queued') {

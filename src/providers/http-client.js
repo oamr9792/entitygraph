@@ -112,7 +112,10 @@ export function assertWithinBudget(entityId, { maxApiCostUsd = null, maxLlmToken
 // --- Rate limiting and requests ---------------------------------------------
 
 const lastCallAt = new Map();
-const MIN_GAP_MS = { dataforseo: 250, anthropic: 120, openai: 120, commoncrawl: 500, page: 300, generic: 100 };
+// Page fetches are spaced per host by services/fetch.js, which is where
+// politeness actually belongs; a large global gap here would serialise the
+// concurrent pool against unrelated domains for no benefit.
+const MIN_GAP_MS = { dataforseo: 250, anthropic: 120, openai: 120, commoncrawl: 500, page: 50, generic: 100 };
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 

@@ -20,6 +20,49 @@ const MAX_HTML_BYTES = 3 * 1024 * 1024;
 const ROBOTS_TTL_MS = 6 * 60 * 60 * 1000;
 const robotsCache = new Map();
 
+const PAGE_TIMEOUT_MS = 10000;
+const ROBOTS_TIMEOUT_MS = 5000;
+const HOST_GAP_MS = 1500;
+
+/**
+ * Politeness is per host, not global.
+ *
+ * These fetches run concurrently, so a single global gap would either
+ * serialise the whole pool or let eight requests hit one newspaper at once.
+ * Spacing per host gives both: unrelated domains proceed in parallel, one
+ * domain is still approached at a walking pace.
+ */
+const lastHostFetch = new Map();
+
+async function hostGap(url) {
+  let host;
+  try { host = new URL(url).host; } catch { return; }
+  const previous = lastHostFetch.get(host) ?? 0;
+  const wait = previous + HOST_GAP_MS - Date.now();
+  // Reserve this host's slot before awaiting, so concurrent callers for the
+  // same host queue behind each other instead of all reading the same past
+  // timestamp and firing together.
+  lastHostFetch.set(host, Math.max(Date.now(), previous + HOST_GAP_MS));
+  if (wait > 0) await new Promise((r) => setTimeout(r, wait));
+}
+
+/**
+ * Runs `worker` over `items` with a bounded number in flight. Order of
+ * completion does not matter here; every worker writes its own row.
+ */
+export async function mapPool(items, concurrency, worker) {
+  const queue = [...items.entries()];
+  const runners = Array.from({ length: Math.max(1, Math.min(concurrency, items.length)) }, async () => {
+    for (;;) {
+      const next = queue.shift();
+      if (!next) return;
+      const [index, item] = next;
+      await worker(item, index);
+    }
+  });
+  await Promise.all(runners);
+}
+
 /**
  * Minimal robots.txt evaluation: the most specific matching group wins between
  * our token and '*', and Allow beats Disallow at equal specificity, which is
@@ -37,7 +80,7 @@ async function robotsAllows(url) {
     try {
       const res = await fetch(`${origin}/robots.txt`, {
         headers: { 'user-agent': config.pageFetchUserAgent },
-        signal: AbortSignal.timeout(10000),
+        signal: AbortSignal.timeout(ROBOTS_TIMEOUT_MS),
       });
       if (res.ok) {
         const text = (await res.text()).slice(0, 200000);
@@ -121,6 +164,8 @@ const safeCodePoint = (n) => {
 export async function fetchPageText(url, { entityId = null, jobId = null, allowProviderFallback = true } = {}) {
   if (!config.pageFetchEnabled) return { ok: false, status: 'skipped', reason: 'page fetching disabled' };
 
+  await hostGap(url);
+
   try {
     if (!(await robotsAllows(url))) {
       const viaProvider = allowProviderFallback ? await providerFallback(url, entityId, jobId) : null;
@@ -142,7 +187,11 @@ export async function fetchPageText(url, { entityId = null, jobId = null, allowP
           'accept-language': 'en',
         },
       },
-      { retries: 1, timeoutMs: 20000 }
+      // No retry, short timeout. Every document here already has a usable
+      // snippet, so a page that will not answer in ten seconds is not worth
+      // waiting forty for — at corpus scale that patience is the difference
+      // between a build that takes two minutes and one that takes two hours.
+      { retries: 0, timeoutMs: PAGE_TIMEOUT_MS }
     );
     // request() parses JSON; HTML comes back in _raw.
     const html = typeof res === 'string' ? res : (res?._raw ?? '');

@@ -232,7 +232,12 @@ export async function phraseTrends(keyword, { dateFrom, dateTo = null, dateGroup
     internal_list_limit: internalListLimit,
   };
   const { result } = await call(ENDPOINTS.phrase_trends, task, { entityId, jobId, force });
-  const items = result?.[0]?.items ?? [];
+  // Unlike search and summary, phrase_trends returns the periods directly in
+  // `result` rather than nesting them under `result[0].items`. Reading it the
+  // usual way silently yields an empty series — which looks exactly like "this
+  // entity has no history" rather than like a parsing bug, so it is worth the
+  // comment.
+  const items = Array.isArray(result?.[0]?.items) ? result[0].items : (result ?? []);
   const periodStart = currentPeriodStart(dateGroup);
   return items.map((i) => ({
     date: i.date,
