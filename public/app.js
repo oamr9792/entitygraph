@@ -391,6 +391,7 @@ route('/entities/:id/review', () => import('./views/review.js').then((m) => m.re
 route('/entities/:id/identity', () => import('./views/review.js').then((m) => m.identityView));
 route('/entities/:id/jobs', () => import('./views/review.js').then((m) => m.jobsView));
 route('/associations/:id', () => import('./views/evidence.js').then((m) => m.evidenceView));
+route('/associations/:id/plan', () => import('./views/plan.js').then((m) => m.planView));
 
 window.addEventListener('hashchange', render);
 

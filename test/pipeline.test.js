@@ -389,3 +389,79 @@ test('a failing LLM provider trips a breaker and falls back rather than failing 
   assert.equal(llm.llmStatus().consecutive_failures, 0);
   assert.equal(llm.llmStatus().last_error, null);
 });
+
+/**
+ * §57–§60 — the action planner, and specifically the case where the honest
+ * answer is that a displacement campaign will not work.
+ *
+ * An association carried by many independent domains, several of them
+ * high-authority, stating the relationship directly, is an established fact of
+ * the public record. The model's own arithmetic says its share will not move
+ * usefully, and a tool that recommended a campaign anyway would be selling
+ * work it has already computed to be ineffective. This asserts the planner
+ * reaches that conclusion and does not offer displacement alongside it.
+ */
+test('§57 a well-corroborated association is not offered a displacement campaign', async () => {
+  const { run, get } = await import('../src/db.js');
+  const { actionPlan } = await import('../src/services/actionplan.js');
+  const { upsertAssociation } = await import('../src/services/canonicalize.js');
+
+  const assocId = upsertAssociation(entityId, {
+    canonical_label: 'Federal Indictment',
+    kind: 'named_entity',
+    category: 'legal',
+  });
+
+  // Twelve independent domains, four of them national publications, each
+  // stating the relationship directly and recently.
+  const majors = ['nytimes.com', 'reuters.com', 'bloomberg.com', 'wsj.com'];
+  const others = ['lawreview.org', 'courtwatch.com', 'legalnews.net', 'statepress.com',
+    'dailyrecord.com', 'cityherald.com', 'newswire.co', 'tribune.com'];
+  const domains = [...majors, ...others];
+
+  domains.forEach((domain, i) => {
+    run(
+      `INSERT INTO domains (root_domain, domain_rank, classification) VALUES (?, ?, ?)
+       ON CONFLICT(root_domain) DO UPDATE SET classification = excluded.classification`,
+      domain,
+      i < majors.length ? 92 : 55,
+      i < majors.length ? 'major' : 'ordinary'
+    );
+    const doc = run(
+      `INSERT INTO documents (url, root_domain, published_at, domain_rank) VALUES (?, ?, datetime('now', '-30 days'), ?)`,
+      `https://${domain}/indictment-story`,
+      domain,
+      i < majors.length ? 92 : 55
+    );
+    const documentId = Number(doc.lastInsertRowid);
+    run(
+      `INSERT INTO entity_document_matches (entity_id, document_id, entity_confidence, verdict)
+       VALUES (?, ?, 0.97, 'accept')`,
+      entityId,
+      documentId
+    );
+    run(
+      `INSERT INTO evidence (entity_id, association_id, document_id, evidence_text, entity_confidence,
+         relationship_confidence, proximity_score, source_reliability, recency_weight, independence_weight,
+         evidence_score, published_at, relationship)
+       VALUES (?, ?, ?, 'named in the indictment', 0.97, 0.95, 0.9, 0.9, 1.0, 1.0, 0.7, datetime('now', '-30 days'), 'named_in')`,
+      entityId,
+      assocId,
+      documentId
+    );
+  });
+
+  const { rescoreEntity } = await import('../src/services/metrics.js');
+  rescoreEntity(entityId);
+
+  const plan = actionPlan(assocId);
+  assert.equal(plan.character.verdict, 'central_and_corroborated', plan.character.reasoning);
+  assert.ok(plan.character.major_domains >= 3, 'the major-outlet count is what triggers this');
+
+  const keys = plan.routes.map((r) => r.key);
+  assert.ok(keys.includes('not_a_metrics_problem'), 'the planner must say displacement is the wrong instrument');
+  assert.ok(!keys.includes('displace'), 'and must not offer a displacement campaign alongside it');
+
+  // The projection must never be dressed up as a prediction about Google.
+  assert.match(plan.simulation_disclaimer, /not predictions of Google rankings/i);
+});

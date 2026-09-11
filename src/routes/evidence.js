@@ -6,6 +6,7 @@ import { setManualVerdict } from '../services/disambiguation.js';
 import { clusterMembers } from '../services/duplicates.js';
 import { relatedAssociations, disjointAssociations } from '../services/related.js';
 import { diagnoseEmptyEntity } from '../services/diagnosis.js';
+import { actionPlan } from '../services/actionplan.js';
 import { llmStatus } from '../providers/llm/index.js';
 import { listProviders } from '../providers/corpus/index.js';
 import '../providers/corpus/providers.js';
@@ -23,6 +24,22 @@ evidenceRoutes.get('/api/entities/:id/diagnosis', (req, res, params) => {
   const result = diagnoseEmptyEntity(Number(params.id));
   if (!result) throw notFound('entity not found');
   ok(res, result);
+});
+
+/**
+ * §57-§60 — what to actually do about an association.
+ *
+ * Kept separate from the scores because it answers a different question: not
+ * how strong the association is, but which of the available routes is open,
+ * and whether displacement is even the right instrument for this one.
+ */
+evidenceRoutes.get('/api/associations/:id/action-plan', (req, res, params, url) => {
+  const targetShare = url.searchParams.get('target_share');
+  const plan = actionPlan(Number(params.id), {
+    targetShare: targetShare === null ? null : Math.min(0.9, Math.max(0.005, Number(targetShare))),
+  });
+  if (!plan) throw notFound('association not found');
+  ok(res, plan);
 });
 
 /**

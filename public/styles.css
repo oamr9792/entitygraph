@@ -417,3 +417,31 @@ a.chip:hover { border-color: var(--accent-dim); color: var(--accent); }
 .diagnosis-counts .l { display: block; font-size: 0.72rem; color: var(--dim); margin-top: 0.15rem; }
 .diagnosis-steps { margin-top: 1rem; }
 .diagnosis-steps summary { cursor: pointer; font-size: 0.82rem; color: var(--muted); }
+
+/* --- Action plan routes ---------------------------------------------------- */
+.route {
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--accent-dim);
+  border-radius: 6px;
+  padding: 0.8rem 0.95rem;
+  margin-bottom: 0.8rem;
+  background: var(--panel-2);
+}
+/* The route that says "do not run a campaign" is the one most likely to be
+   skimmed past, so it is marked rather than left to blend in. */
+.route-stop { border-left-color: var(--bad); }
+.route-head { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.4rem; }
+.route-n {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.35rem; height: 1.35rem;
+  border-radius: 50%;
+  background: var(--line);
+  font-size: 0.72rem;
+  font-family: var(--mono);
+  color: var(--muted);
+}
+.route-why { margin: 0 0 0.55rem; color: var(--muted); font-size: 0.86rem; line-height: 1.6; }
+.route-actions { margin: 0 0 0.6rem; padding-left: 1.1rem; }
+.route-actions li { font-size: 0.85rem; line-height: 1.65; margin-bottom: 0.2rem; }

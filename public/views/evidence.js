@@ -157,6 +157,7 @@ export async function evidenceView({ params }) {
           `${active.length} contributing evidence rows`, excluded.length ? ` · ${excluded.length} excluded` : '')
       ),
       h('div', { class: 'toolbar' },
+        h('button', { class: 'primary', onclick: () => navigate(`#/associations/${association.id}/plan`) }, 'Action plan'),
         h('a', { class: 'btn', href: `/api/associations/${association.id}/evidence?format=csv` }, 'Export CSV'),
         h('button', { onclick: () => navigate(`#/entities/${association.entity_id}`) }, 'Back to dashboard')
       )
