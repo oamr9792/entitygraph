@@ -1,0 +1,80 @@
+# Render blueprint. Connect this repository at https://render.com/deploy and
+# Render reads this file; after that every push to the default branch deploys
+# automatically.
+#
+# Why Render rather than a serverless host: this app is a long-running process
+# with a database on disk. Builds take five to thirty minutes, which is longer
+# than any serverless function is allowed to run, and the SQLite file has to
+# survive between requests. Both are met by an ordinary server with a disk
+# attached, which is what this describes.
+services:
+  - type: web
+    name: entitygraph
+    runtime: node
+    # A disk requires a paid instance type. The free tier also sleeps after
+    # inactivity, which would kill a build halfway through.
+    plan: starter
+    region: oregon
+    branch: main
+    autoDeploy: true
+
+    # No dependencies to install — the app runs on Node's standard library.
+    buildCommand: 'echo "no dependencies to install"'
+    startCommand: node server.js
+
+    # /api/me answers without a session, so it is a health check that proves
+    # the process is up without punching a hole in the authentication.
+    healthCheckPath: /api/me
+
+    disk:
+      name: entitygraph-data
+      mountPath: /var/data
+      sizeGB: 1
+
+    envVars:
+      # node:sqlite needs Node 22.5 or later.
+      - key: NODE_VERSION
+        value: '22'
+      - key: NODE_ENV
+        value: production
+      # Bind to every interface: Render routes to the container, and the
+      # development default of 127.0.0.1 would refuse those connections.
+      - key: HOST
+        value: 0.0.0.0
+      # On the mounted disk, so the corpus and its scores survive a redeploy.
+      - key: DB_PATH
+        value: /var/data/entitygraph.db
+      # Render's proxy sets X-Forwarded-For; without this every session would
+      # record the proxy's address instead of the client's.
+      - key: TRUST_PROXY
+        value: 'true'
+      # Generated once by Render and kept across deploys. If this ever changes,
+      # every session is invalidated — which is why it is not in the repo.
+      - key: SESSION_SECRET
+        generateValue: true
+
+      # Secrets. sync:false means Render prompts for the value and stores it in
+      # the dashboard rather than reading it from this file — nothing sensitive
+      # belongs in version control.
+      - key: DATAFORSEO_LOGIN
+        sync: false
+      - key: DATAFORSEO_PASSWORD
+        sync: false
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: LLM_PROVIDER
+        value: anthropic
+      - key: ANTHROPIC_MODEL
+        value: claude-sonnet-5
+
+      # The first administrator. Set the email before the first deploy; the
+      # password is generated and printed once to the deploy log, and must be
+      # changed at first sign-in.
+      - key: BOOTSTRAP_ADMIN_EMAIL
+        sync: false
+
+      # Cost ceilings, enforced before every provider call.
+      - key: MAX_DOCUMENTS
+        value: '4000'
+      - key: MAX_API_COST_USD
+        value: '25'
