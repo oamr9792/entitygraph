@@ -6,6 +6,8 @@ import '../providers/corpus/providers.js'; // registers the four providers
 import * as dfs from '../providers/dataforseo.js';
 import { ingestCandidates, recordVersion } from '../services/ingest.js';
 import { fetchPageText, storeBody, mapPool } from '../services/fetch.js';
+import { withSerpPrior, serpRankFromRef } from '../services/disambiguation.js';
+import { probeTermsFromSignals } from '../providers/serp-signals.js';
 import { scoreDocument, adjudicate, saveMatch } from '../services/disambiguation.js';
 import { buildWindows, extractFromWindow } from '../services/extraction.js';
 import { upsertAssociation, recordSurfaceForm, canonicaliseAssociations, applyDefaultHierarchy } from '../services/canonicalize.js';
@@ -120,6 +122,80 @@ const HANDLERS = {
     let totalAvailable = 0;
     const collected = [];
 
+    // Order matters, and it used to be backwards. The name search ran first and
+    // was handed the whole document budget; for anyone notable it filled the
+    // ceiling by itself, so the probes and the SERP — the parts added
+    // specifically to find what the name search misses — never ran. Observed:
+    // 2,241 indexed documents for a name, a 300-document ceiling, zero probe
+    // queries, zero SERP documents, and a dashboard that could not see what was
+    // on Google's first page.
+    //
+    // Now: Google first, because Google is what the analyst is trying to
+    // explain; then probes, inside a reserved share of the budget; then the
+    // name search fills whatever is left.
+
+    // 1. §12 — Google's page for the name. At most a hundred documents, and
+    // taken before anything else can crowd it out.
+    const serpItems = [];
+    let googleSignals = null;
+    if (state.options.serpAsCorpus !== false) {
+      const serpOptions = {
+        depth: state.options.serpDepth ?? 100,
+        location: state.options.location,
+        language: state.options.language,
+        entityId,
+        jobId: ctx.jobId,
+      };
+      const { items } = await searchAcross(['google_serp'], aliases[0], { ...serpOptions, force: state.options.force });
+      serpItems.push(...items);
+      collected.push(...items);
+      // The same request, read back from the cache it was just written to: the
+      // corpus-provider interface carries documents, and the rest of the page —
+      // related searches, the knowledge panel — is needed as well.
+      try {
+        googleSignals = (await dfs.serpOrganic(aliases[0], serpOptions)).signals ?? null;
+      } catch {
+        googleSignals = null;
+      }
+    }
+    state.googleSignals = googleSignals;
+
+    // 2. §9 — paired probes: the analyst's own terms, plus the subjects Google
+    // itself relates to the name. Each is a filtered query for documents that
+    // mention both, however the provider would otherwise rank them.
+    const explicitProbes = state.options.probeTerms ?? safeJson(state.entity.probe_terms, []);
+    const autoProbes = state.options.autoProbes === false ? [] : probeTermsFromSignals(googleSignals, aliases);
+    const probes = [];
+    for (const term of [...explicitProbes, ...autoProbes]) {
+      if (!probes.some((p) => p.toLowerCase() === String(term).toLowerCase())) probes.push(String(term));
+    }
+    const probeBudget = Math.floor(maxDocuments * (state.options.probeShare ?? 0.4));
+    const perProbe = probes.length ? Math.max(20, Math.floor(probeBudget / probes.length)) : 0;
+    const probeItems = [];
+    const probeReport = [];
+    for (const term of probes) {
+      if (ctx.shouldStop?.()) break;
+      const room = Math.min(perProbe, state.options.probeLimit ?? perProbe, maxDocuments - collected.length);
+      if (room <= 0) { stopReason = 'max_documents'; break; }
+      const { items } = await searchAcross(['dataforseo'], `"${aliases[0]}"`, {
+        maxDocuments: room,
+        pageSize: Math.min(100, room),
+        filters: dfs.pairedFilter(term),
+        entityId,
+        jobId: ctx.jobId,
+        force: state.options.force,
+      });
+      probeItems.push(...items);
+      collected.push(...items);
+      probeReport.push({
+        term,
+        source: explicitProbes.some((p) => String(p).toLowerCase() === term.toLowerCase()) ? 'analyst' : 'google_related',
+        returned: items.length,
+      });
+    }
+    const serpAdded = serpItems.length;
+
+    // 3. The name search, into whatever budget remains.
     for (const alias of aliases) {
       if (collected.length >= maxDocuments) { stopReason = 'max_documents'; break; }
       const remaining = maxDocuments - collected.length;
@@ -142,60 +218,29 @@ const HANDLERS = {
       }
     }
 
-    // §9 — paired probes.
-    //
-    // The name-only search returns the provider's top-relevance slice, ordered
-    // by something unrelated to what we are investigating. A subject that
-    // matters to the client can sit in hundreds of indexed documents and never
-    // appear in the first several hundred results for the name. Observed: a
-    // lawyer whose corpus held 750 documents pairing his name with a
-    // controversy, none of which the name search surfaced.
-    //
-    // So each probe term gets its own filtered query. These are the documents
-    // an analyst already knows exist, because they can see them on Google.
-    const probes = state.options.probeTerms ?? safeJson(state.entity.probe_terms, []);
-    const probeReport = [];
-    for (const term of probes) {
-      if (collected.length >= maxDocuments) { stopReason = 'max_documents'; break; }
-      if (ctx.shouldStop?.()) break;
-      const before = collected.length;
-      const { items } = await searchAcross(['dataforseo'], `"${aliases[0]}"`, {
-        maxDocuments: Math.min(state.options.probeLimit ?? 100, maxDocuments - collected.length),
-        pageSize: state.options.pageSize ?? 100,
-        filters: dfs.pairedFilter(term),
-        entityId,
-        jobId: ctx.jobId,
-        force: state.options.force,
-      });
-      collected.push(...items);
-      probeReport.push({ term, returned: items.length, added: collected.length - before });
-    }
-
-    // §12 — the SERP contributes documents as well as measuring retrieval.
-    // These are the pages a person actually sees when they search the name,
-    // and a corpus that omits them cannot explain what Google is showing.
-    // They stay tagged `google_serp`, so §14's corpus-versus-retrieval
-    // distinction survives having them in the corpus.
-    let serpAdded = 0;
-    if (state.options.serpAsCorpus !== false && collected.length < maxDocuments) {
-      const { items } = await searchAcross(['google_serp'], aliases[0], {
-        depth: state.options.serpDepth ?? 100,
-        location: state.options.location,
-        language: state.options.language,
-        entityId,
-        jobId: ctx.jobId,
-        force: state.options.force,
-      });
-      collected.push(...items);
-      serpAdded = items.length;
-    }
-
     const ingested = ingestCandidates(collected);
-    state.documentIds = ingested.ids;
+    // One URL can arrive from all three sources; it is still one document.
+    state.documentIds = [...new Set(ingested.ids)];
     state.counts.documents_seen = collected.length;
     state.counts.documents_new = ingested.created;
     state.counts.probes = probeReport;
     state.counts.serp_documents = serpAdded;
+
+    // Which documents came from Google and from the probes, by id, for the two
+    // later steps that must treat them differently: page fetching reads them
+    // first, and disambiguation credits a Google rank for the name. Held in run
+    // state rather than on the row, because a document the name search created
+    // in an earlier build keeps its original provider tag — and on a deployed
+    // database that is most of them.
+    const docIdFor = (item) =>
+      get(`SELECT id FROM documents WHERE url = ? OR canonical_url = ?`, item.url, item.canonical_url ?? item.url)?.id ?? null;
+    state.serpRanks = new Map();
+    for (const item of serpItems) {
+      const id = docIdFor(item);
+      const rank = Number(/^rank:(\d+)$/.exec(item.provider_ref ?? '')?.[1]);
+      if (id && rank && !(state.serpRanks.get(id) <= rank)) state.serpRanks.set(id, rank);
+    }
+    state.priorityDocumentIds = new Set([...state.serpRanks.keys(), ...probeItems.map(docIdFor).filter(Boolean)]);
 
     // Recorded for §70/§71: coverage cannot be reported honestly without
     // knowing which aliases ran and why ingestion stopped.
@@ -276,15 +321,31 @@ const HANDLERS = {
   async fetch_evidence_windows(state, ctx) {
     if (!config.pageFetchEnabled) return 'page fetching disabled';
     const limit = state.options.fetchLimit ?? 150;
-    const docs = all(
+    // Google's results first, in rank order; then the probe documents; then
+    // everything else by domain rank. The old ordering was domain rank alone,
+    // and SERP documents carry no domain rank — so they sorted last, fell
+    // outside the fetch limit, and were scored from Google's two-line
+    // description. The pages people actually see were the pages least read.
+    const candidates = all(
       `SELECT * FROM documents
         WHERE id IN (${state.documentIds.map(() => '?').join(',') || 'NULL'})
           AND fetch_status = 'snippet_only'
-        ORDER BY domain_rank DESC NULLS LAST, prominence DESC
-        LIMIT ?`,
-      ...state.documentIds,
-      limit
+        ORDER BY domain_rank DESC NULLS LAST, prominence DESC`,
+      ...state.documentIds
     );
+    const serpRanks = state.serpRanks ?? new Map();
+    const priority = state.priorityDocumentIds ?? new Set();
+    const tier = (doc) => (serpRanks.has(doc.id) ? 0 : priority.has(doc.id) ? 1 : 2);
+    const docs = candidates
+      .map((doc, order) => ({ doc, order }))
+      .sort((a, b) =>
+        tier(a.doc) - tier(b.doc) ||
+        (tier(a.doc) === 0 ? serpRanks.get(a.doc.id) - serpRanks.get(b.doc.id) : a.order - b.order)
+      )
+      // The Google results are added on top of the limit rather than taking
+      // part of it, so reading them never costs the corpus its own sample.
+      .slice(0, limit + serpRanks.size)
+      .map((x) => x.doc);
 
     let fetched = 0;
     let failed = 0;
@@ -340,6 +401,11 @@ const HANDLERS = {
         snippet: doc.snippet,
         body: doc.body_text,
       });
+      // A page Google ranks for the entity's own name has already passed
+      // Google's disambiguation. Credit that, rank-weighted — a prior that moves
+      // a borderline page into adjudication, never an automatic accept. The run
+      // state knows this build's ranks; the row tag covers a resumed build.
+      result = withSerpPrior(result, state.serpRanks?.get(doc.id) ?? serpRankFromRef(doc.provider_ref));
 
       if (result.verdict === 'review' && adjudicated < adjudicationBudget) {
         try {

@@ -503,3 +503,107 @@ test('§9 a paired probe filter reaches the provider request intact', async () =
 
   assert.equal(dfs.contentSearchTask({ keyword: 'x', limit: 5000 }).limit, 1000, 'limit is capped at the API maximum');
 });
+
+// ---------------------------------------------------------------------------
+// Google's own association signals, and the chain that used to drop them.
+// Regression context: an analyst could see 13 of 67 organic results for a name
+// mention a subject, and the tool found one document.
+// ---------------------------------------------------------------------------
+
+test('Google related searches, People Also Ask and the knowledge panel are parsed, not discarded', async () => {
+  const { parseSerpSignals } = await import('../src/providers/serp-signals.js');
+  // Shapes taken from a live DataForSEO response.
+  const signals = parseSerpSignals([
+    { type: 'organic', title: 'ignored here' },
+    { type: 'related_searches', items: ['Jay Lefkowitz, Kirkland', 'Jay Lefkowitz Columbia', 'Jay Lefkowitz net worth'] },
+    { type: 'people_also_ask', items: [{ type: 'people_also_ask_element', title: 'Who is Jay Lefkowitz?' }] },
+    {
+      type: 'knowledge_graph',
+      title: 'Jay Lefkowitz',
+      subtitle: 'American lawyer',
+      description: 'A litigation partner at Kirkland & Ellis.',
+      items: [
+        { type: 'knowledge_graph_description_item', links: [{ domain: 'en.wikipedia.org' }] },
+        { type: 'knowledge_graph_row_item', title: 'Born', text: 'Born : November 20, 1962' },
+      ],
+    },
+  ]);
+  assert.deepEqual(signals.related_searches, ['Jay Lefkowitz, Kirkland', 'Jay Lefkowitz Columbia', 'Jay Lefkowitz net worth']);
+  assert.deepEqual(signals.people_also_ask, ['Who is Jay Lefkowitz?']);
+  assert.equal(signals.knowledge_graph.subtitle, 'American lawyer');
+  assert.deepEqual(signals.knowledge_graph.facts, [{ label: 'Born', text: 'Born : November 20, 1962' }]);
+  assert.deepEqual(signals.knowledge_graph.sources, ['en.wikipedia.org']);
+  assert.deepEqual(parseSerpSignals([]).related_searches, [], 'a page without these blocks is not an error');
+});
+
+test('probe terms come from what Google relates to the name, minus the name and the gossip', async () => {
+  const { probeTermsFromSignals } = await import('../src/providers/serp-signals.js');
+  const terms = probeTermsFromSignals(
+    {
+      related_searches: [
+        'Jay Lefkowitz, Kirkland', 'Jay Lefkowitz Columbia', 'Jay Lefkowitz net worth', 'Jay Lefkowitz wife',
+        'Jay lefkowitz ethnicity', 'Jay Lefkowitz religion', 'Jay lefkowitz salary', 'Jay lefkowitz tikvah',
+      ],
+    },
+    ['Jay Lefkowitz', 'Jay P. Lefkowitz']
+  );
+  assert.deepEqual(terms, ['Kirkland', 'Columbia', 'tikvah']);
+  assert.deepEqual(probeTermsFromSignals(null, ['x']), []);
+});
+
+test('a Google rank for the name is identity evidence — a prior, never a pass on its own', async () => {
+  const { withSerpPrior, serpRankFromRef } = await import('../src/services/disambiguation.js');
+  const nameOnly = { confidence: 0.05, verdict: 'reject', matched_alias: 'Jay Lefkowitz', method: 'markers', reasons: [] };
+
+  const top = withSerpPrior(nameOnly, 2);
+  assert.equal(top.verdict, 'review', 'a top result with no marker goes to adjudication, not straight in');
+  assert.ok(top.reasons.some((r) => r.kind === 'google_rank'));
+
+  const withMarker = withSerpPrior({ ...nameOnly, confidence: 0.41, verdict: 'review' }, 8);
+  assert.equal(withMarker.verdict, 'accept', 'one confirming marker plus a first-page rank is enough');
+
+  assert.equal(withSerpPrior(nameOnly, 250), nameOnly, 'no credit beyond the depth we fetch');
+  assert.equal(withSerpPrior({ ...nameOnly, matched_alias: null }, 1).verdict, 'reject', 'no name in the text, no identity credit');
+  assert.equal(serpRankFromRef('rank:14'), 14);
+  assert.equal(serpRankFromRef('probe:Epstein'), null);
+});
+
+test('headline surnames link a Google result to a person association — but never the entity’s own surname', async () => {
+  const { run, get } = await import('../src/db.js');
+  const { upsertAssociation } = await import('../src/services/canonicalize.js');
+  const { classifySnapshot } = await import('../src/services/serp.js');
+
+  const own = get(`SELECT canonical_name FROM entities WHERE id = ?`, entityId).canonical_name;
+  const ownSurname = own.trim().split(/\s+/).at(-1);
+
+  const epstein = upsertAssociation(entityId, { canonical_label: 'Jeffrey Epstein', kind: 'named_entity', category: 'person' });
+  const relative = upsertAssociation(entityId, { canonical_label: `Rachel ${ownSurname}`, kind: 'named_entity', category: 'person' });
+
+  const snap = run(`INSERT INTO serp_snapshots (entity_id, query) VALUES (?, ?)`, entityId, own);
+  const snapshotId = Number(snap.lastInsertRowid);
+  const result = run(
+    `INSERT INTO serp_results (snapshot_id, rank, url, title, description) VALUES (?, 8, ?, ?, ?)`,
+    snapshotId,
+    'https://www.law.com/example',
+    `${own}, Kirkland Partner Who Represented Epstein`,
+    `${own} is a lawyer.`
+  );
+  const resultId = Number(result.lastInsertRowid);
+
+  await classifySnapshot(entityId, snapshotId, { useLlm: false });
+
+  const link = get(`SELECT method FROM serp_result_associations WHERE serp_result_id = ? AND association_id = ?`, resultId, epstein);
+  assert.equal(link?.method, 'surname_match', '"Represented Epstein" supports the Jeffrey Epstein association');
+  assert.equal(
+    get(`SELECT 1 AS hit FROM serp_result_associations WHERE serp_result_id = ? AND association_id = ?`, resultId, relative),
+    null,
+    'a relative sharing the entity’s surname must not claim every result that names the entity'
+  );
+});
+
+test('columns added after the first deploy reach an existing database', async () => {
+  const { all } = await import('../src/db.js');
+  const cols = (t) => all(`PRAGMA table_info(${t})`).map((c) => c.name);
+  assert.ok(cols('entities').includes('probe_terms'));
+  assert.ok(cols('serp_snapshots').includes('signals'));
+});

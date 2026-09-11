@@ -280,3 +280,51 @@ export function disambiguationSummary(entityId) {
 }
 
 export { BOUNDARY_FACTOR, NAME_MATCH_BASE, normaliseWithMap };
+
+/**
+ * Credit for having been returned by Google for the entity's own name.
+ *
+ * A page in the organic results for the exact name query has already been
+ * through the most thorough disambiguation available — Google's — and ranked
+ * for that name. Scoring it like any other page that merely contains the name
+ * (0.05 before markers) threw that away. A two-line Google description rarely
+ * mentions an employer or a city, so the very pages people see when they search
+ * the name were rejected as a different person.
+ *
+ * A prior, not a pass. Rank-weighted, and never enough on its own to accept a
+ * document: for a common name Google's first page mixes several people. Alone,
+ * a top-ten result lands in the review band, where the LLM adjudication decides
+ * it; combined with one confirming marker, it is accepted.
+ */
+const SERP_PRIOR = [
+  { maxRank: 3, strength: 0.6 },
+  { maxRank: 10, strength: 0.5 },
+  { maxRank: 30, strength: 0.35 },
+  { maxRank: 100, strength: 0.2 },
+];
+
+export const serpRankFromRef = (providerRef) => {
+  const match = /^rank:(\d+)$/.exec(String(providerRef ?? ''));
+  return match ? Number(match[1]) : null;
+};
+
+export function withSerpPrior(result, rank, thresholds = MODEL.entityConfidence) {
+  if (!result || !rank || result.method === 'known_url') return result;
+  // No alias in the text means Google returned the page for some other reason —
+  // a surname-only list, a disambiguation page — and its rank says nothing
+  // about identity.
+  if (!result.matched_alias) return result;
+  const tier = SERP_PRIOR.find((t) => rank <= t.maxRank);
+  if (!tier) return result;
+
+  const confidence = round(clamp(1 - (1 - result.confidence) * (1 - tier.strength)), 3);
+  return {
+    ...result,
+    confidence,
+    verdict: verdictFor(confidence, thresholds),
+    reasons: [
+      ...(result.reasons ?? []),
+      { kind: 'google_rank', value: `#${rank} on Google for the name`, contribution: tier.strength },
+    ],
+  };
+}

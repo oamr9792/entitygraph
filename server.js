@@ -12,9 +12,10 @@ import { authRoutes } from './src/routes/auth.js';
 import { entityRoutes } from './src/routes/entities.js';
 import { analysisRoutes } from './src/routes/analysis.js';
 import { evidenceRoutes } from './src/routes/evidence.js';
+import { googleRoutes } from './src/routes/google.js';
 
 const router = new Router();
-for (const group of [authRoutes, entityRoutes, analysisRoutes, evidenceRoutes]) {
+for (const group of [authRoutes, entityRoutes, analysisRoutes, evidenceRoutes, googleRoutes]) {
   router.routes.push(...group.routes);
 }
 

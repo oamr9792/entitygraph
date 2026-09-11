@@ -260,6 +260,14 @@ export async function dashboardView({ params, query }) {
     disclaimer(data.disclaimer),
     stateRow,
     h('div', { style: { height: '1.1rem' } }),
+    // Its own module, loaded after the page renders, so a slow Google snapshot
+    // never holds up the leaderboard.
+    (() => {
+      const slot = h('div', {});
+      import('./google.js').then((m) => slot.append(m.googlePanel(params.id))).catch(() => {});
+      return slot;
+    })(),
+    h('div', { style: { height: '1.1rem' } }),
     timeControl(query),
     h('div', { class: 'panel' },
       h('h2', {}, 'Association leaderboard', h('span', { class: 'small dim' }, 'click any column to sort')),

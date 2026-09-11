@@ -1,6 +1,7 @@
 import config from '../config.js';
 import { billedRequest, request, ProviderError } from './http-client.js';
 import { canonicaliseUrl, rootDomain } from '../util/hash.js';
+import { parseSerpSignals } from './serp-signals.js';
 
 /**
  * DataForSEO v3 — the primary discovery corpus (§9).
@@ -323,6 +324,9 @@ export async function serpOrganic(keyword, { depth = 100, location = 'United Sta
     depth,
     item_types: [...new Set(items.map((i) => i.type))],
     knowledge_graph: items.find((i) => i.type === 'knowledge_graph') ?? null,
+    // Related searches, People Also Ask, the knowledge panel: Google stating
+    // its own associations for the query. Previously discarded.
+    signals: parseSerpSignals(items),
     results: organic.map((i) => ({
       rank: i.rank_absolute ?? i.rank_group,
       url: i.url,

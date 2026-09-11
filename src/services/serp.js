@@ -38,8 +38,8 @@ export async function captureAssociationSerp(entityId, associationId, query, opt
 function storeSnapshot(entityId, serp, { queryKind, associationId = null }) {
   return tx(() => {
     const res = run(
-      `INSERT INTO serp_snapshots (entity_id, query, query_kind, association_id, location, language, device, depth, item_types)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO serp_snapshots (entity_id, query, query_kind, association_id, location, language, device, depth, item_types, signals)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       entityId,
       serp.keyword,
       queryKind,
@@ -48,7 +48,11 @@ function storeSnapshot(entityId, serp, { queryKind, associationId = null }) {
       serp.language,
       serp.device,
       serp.depth,
-      JSON.stringify(serp.item_types ?? [])
+      JSON.stringify(serp.item_types ?? []),
+      // Related searches, People Also Ask, the knowledge panel. Snapshotted with
+      // the organic results because they change week to week as well, and a
+      // related search appearing or disappearing is itself a finding.
+      JSON.stringify(serp.signals ?? {})
     );
     const snapshotId = Number(res.lastInsertRowid);
 
@@ -104,6 +108,12 @@ export async function classifySnapshot(entityId, snapshotId, { useLlm = true, jo
   let classified = 0;
   const unresolved = [];
 
+  // Tokens of the entity's own name. An association sharing a surname with the
+  // entity — a spouse, a sibling — would otherwise match every result that names
+  // the entity and swallow the whole retrieval score.
+  const entityRow = get(`SELECT canonical_name FROM entities WHERE id = ?`, entityId);
+  const ownTokens = new Set(normaliseForMatch(entityRow?.canonical_name ?? '').split(' ').filter(Boolean));
+
   for (const result of results) {
     const links = new Map();
 
@@ -118,11 +128,26 @@ export async function classifySnapshot(entityId, snapshotId, { useLlm = true, jo
       for (const r of rows) links.set(r.association_id, { confidence: 1, method: 'corpus_match' });
     }
 
-    if (!links.size) {
-      const text = [result.title, result.description].filter(Boolean).join(' — ');
-      for (const association of associations) {
-        if (findOccurrences(text, aliasesFor.get(association.id) ?? []).length) {
-          links.set(association.id, { confidence: 0.7, method: 'text_match' });
+    // The title and description are what a searcher actually reads, and a
+    // subject named there is what Google is presenting the result as being
+    // about. So headline matches are always recorded — not only when the page's
+    // own evidence found nothing. A biography whose body is mostly about a law
+    // firm, headlined "represented Epstein", supports both.
+    const text = [result.title, result.description].filter(Boolean).join(' — ');
+    for (const association of associations) {
+      if (links.has(association.id)) continue;
+      if (findOccurrences(text, aliasesFor.get(association.id) ?? []).length) {
+        links.set(association.id, { confidence: 0.7, method: 'text_match' });
+        continue;
+      }
+      // Headlines name people by surname: "Kirkland Partner Who Represented
+      // Epstein", never "…Represented Jeffrey Epstein". Matching only the full
+      // label missed every one of those. Restricted to people, to distinctive
+      // surnames, and never to a surname the entity itself carries.
+      if (association.kind === 'named_entity' && association.category === 'person') {
+        const surname = normaliseForMatch(association.canonical_label).split(' ').filter(Boolean).at(-1);
+        if (surname && surname.length >= 4 && !ownTokens.has(surname) && findOccurrences(text, [surname]).length) {
+          links.set(association.id, { confidence: 0.55, method: 'surname_match' });
         }
       }
     }

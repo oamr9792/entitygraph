@@ -535,6 +535,30 @@ CREATE INDEX IF NOT EXISTS idx_audit_created ON audit_log(created_at);
 
 db.exec(SCHEMA);
 
+/**
+ * Additive migrations.
+ *
+ * `CREATE TABLE IF NOT EXISTS` creates a table once and never touches it again,
+ * so a column added to the schema above reaches a fresh database and silently
+ * never reaches an existing one. That is exactly how a deployed database ended
+ * up without `probe_terms`: saving a probe failed, every build read the absent
+ * column as "no probes", and nothing reported either.
+ *
+ * Every column added after the first deploy is declared here as well as in the
+ * schema. Additive only — nothing here drops, renames or retypes, because a
+ * migration that can destroy data has no business running on every boot.
+ */
+function ensureColumn(table, column, definition) {
+  const columns = db.prepare(`PRAGMA table_info(${table})`).all().map((c) => c.name);
+  if (columns.includes(column)) return false;
+  db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+  console.log(`[db] added ${table}.${column}`);
+  return true;
+}
+
+ensureColumn('entities', 'probe_terms', "TEXT NOT NULL DEFAULT '[]'");
+ensureColumn('serp_snapshots', 'signals', "TEXT NOT NULL DEFAULT '{}'");
+
 // --- Query helpers ----------------------------------------------------------
 
 export function run(sql, ...params) {

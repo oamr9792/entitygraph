@@ -459,3 +459,21 @@ a.chip:hover { border-color: var(--accent-dim); color: var(--accent); }
   line-height: 1;
 }
 .chip-x:hover { color: var(--bad); }
+
+/* --- What Google associates ------------------------------------------------ */
+.google-h {
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--muted);
+  margin: 1.1rem 0 0.5rem;
+  font-weight: 600;
+}
+.google-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(18rem, 1fr));
+  gap: 1.2rem;
+}
+.kg-title { font-weight: 600; margin-bottom: 0.3rem; }
+.kg-facts { margin: 0.2rem 0 0; padding-left: 1.05rem; }
+.kg-facts li { margin-bottom: 0.25rem; line-height: 1.5; }
