@@ -26,6 +26,7 @@ export const DataForSEOProvider = registerProvider({
       searchMode: options.searchMode ?? 'as_is',
       pageSize: options.pageSize ?? 100,
       maxDocuments: options.maxDocuments ?? 1000,
+      filters: options.filters ?? null,
       entityId: options.entityId,
       jobId: options.jobId,
       force: options.force,
@@ -53,7 +54,7 @@ export const GoogleSERPProvider = registerProvider({
     notes: 'Contributes prominent documents the citation index may rank poorly.',
   }),
   async search(query, options = {}) {
-    const serp = await dfs.serpOrganic(query, {
+    const serp = await dfs.serpOrganic(String(query).replace(/^"|"$/g, ""), {
       depth: options.depth ?? 100,
       location: options.location,
       language: options.language,

@@ -465,3 +465,41 @@ test('§57 a well-corroborated association is not offered a displacement campaig
   // The projection must never be dressed up as a prediction about Google.
   assert.match(plan.simulation_disclaimer, /not predictions of Google rankings/i);
 });
+
+/**
+ * §9 — paired probes, and the query-design gap they close.
+ *
+ * Searching a name alone returns the provider's own top-relevance slice. For a
+ * well-known person that is a small fraction of what the index holds, ordered
+ * by something unrelated to the investigation. Observed: a lawyer whose corpus
+ * held 750 documents pairing his name with a controversy, of which the
+ * name-only search surfaced one.
+ *
+ * The filter has to survive the whole call chain — provider options through to
+ * the request body — or it silently degrades to the name-only search that
+ * caused the problem, and nothing about the result looks wrong.
+ */
+test('§9 a paired probe filter reaches the provider request intact', async () => {
+  const dfs = await import('../src/providers/dataforseo.js');
+
+  const filter = dfs.pairedFilter('Epstein');
+  assert.deepEqual(filter, [['content_info.snippet', 'like', '%Epstein%']]);
+  assert.deepEqual(
+    dfs.pairedFilter('Epstein', 'content_info.title'),
+    [['content_info.title', 'like', '%Epstein%']]
+  );
+
+  // The filter has to survive into the request body. If it is dropped the call
+  // degrades to the name-only search that caused the problem, and nothing
+  // about the result looks wrong.
+  const paired = dfs.contentSearchTask({ keyword: '"Jay Lefkowitz"', filters: filter, limit: 100 });
+  assert.equal(paired.keyword, '"Jay Lefkowitz"', 'the name stays an exact phrase');
+  assert.deepEqual(paired.filters, filter, 'the pairing filter must reach the request body');
+
+  // And must be absent, not null, when no probe is in play — the API rejects
+  // a null filters field rather than ignoring it.
+  const plain = dfs.contentSearchTask({ keyword: '"Jay Lefkowitz"' });
+  assert.equal('filters' in plain, false);
+
+  assert.equal(dfs.contentSearchTask({ keyword: 'x', limit: 5000 }).limit, 1000, 'limit is capped at the API maximum');
+});

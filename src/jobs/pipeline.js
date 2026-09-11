@@ -46,6 +46,15 @@ export const STEPS = [
   'generate_dashboard',
 ];
 
+const safeJson = (value, fallback) => {
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) || (parsed && typeof parsed === 'object') ? parsed : fallback;
+  } catch {
+    return fallback;
+  }
+};
+
 export async function runPipeline(ctx) {
   const { entityId, report } = ctx;
   const entity = get(`SELECT * FROM entities WHERE id = ?`, entityId);
@@ -133,15 +142,67 @@ const HANDLERS = {
       }
     }
 
+    // §9 — paired probes.
+    //
+    // The name-only search returns the provider's top-relevance slice, ordered
+    // by something unrelated to what we are investigating. A subject that
+    // matters to the client can sit in hundreds of indexed documents and never
+    // appear in the first several hundred results for the name. Observed: a
+    // lawyer whose corpus held 750 documents pairing his name with a
+    // controversy, none of which the name search surfaced.
+    //
+    // So each probe term gets its own filtered query. These are the documents
+    // an analyst already knows exist, because they can see them on Google.
+    const probes = state.options.probeTerms ?? safeJson(state.entity.probe_terms, []);
+    const probeReport = [];
+    for (const term of probes) {
+      if (collected.length >= maxDocuments) { stopReason = 'max_documents'; break; }
+      if (ctx.shouldStop?.()) break;
+      const before = collected.length;
+      const { items } = await searchAcross(['dataforseo'], `"${aliases[0]}"`, {
+        maxDocuments: Math.min(state.options.probeLimit ?? 100, maxDocuments - collected.length),
+        pageSize: state.options.pageSize ?? 100,
+        filters: dfs.pairedFilter(term),
+        entityId,
+        jobId: ctx.jobId,
+        force: state.options.force,
+      });
+      collected.push(...items);
+      probeReport.push({ term, returned: items.length, added: collected.length - before });
+    }
+
+    // §12 — the SERP contributes documents as well as measuring retrieval.
+    // These are the pages a person actually sees when they search the name,
+    // and a corpus that omits them cannot explain what Google is showing.
+    // They stay tagged `google_serp`, so §14's corpus-versus-retrieval
+    // distinction survives having them in the corpus.
+    let serpAdded = 0;
+    if (state.options.serpAsCorpus !== false && collected.length < maxDocuments) {
+      const { items } = await searchAcross(['google_serp'], aliases[0], {
+        depth: state.options.serpDepth ?? 100,
+        location: state.options.location,
+        language: state.options.language,
+        entityId,
+        jobId: ctx.jobId,
+        force: state.options.force,
+      });
+      collected.push(...items);
+      serpAdded = items.length;
+    }
+
     const ingested = ingestCandidates(collected);
     state.documentIds = ingested.ids;
     state.counts.documents_seen = collected.length;
     state.counts.documents_new = ingested.created;
+    state.counts.probes = probeReport;
+    state.counts.serp_documents = serpAdded;
 
     // Recorded for §70/§71: coverage cannot be reported honestly without
     // knowing which aliases ran and why ingestion stopped.
     setSetting(`ingest:${entityId}`, {
       queried_aliases: queried,
+      probes: probeReport,
+      serp_documents: serpAdded,
       stop_reason: stopReason,
       total_available: totalAvailable,
       collected: collected.length,
@@ -149,7 +210,11 @@ const HANDLERS = {
       at: new Date().toISOString(),
     });
 
-    return `${collected.length} citations over ${queried.length} alias queries → ${ingested.total} unique documents (${ingested.created} new); stopped: ${stopReason}`;
+    const probeSummary = probeReport.length
+      ? `; probes ${probeReport.map((p) => `${p.term}:${p.returned}`).join(', ')}`
+      : '';
+    const serpSummary = serpAdded ? `; ${serpAdded} from the SERP` : '';
+    return `${collected.length} citations over ${queried.length} alias queries${probeSummary}${serpSummary} → ${ingested.total} unique documents (${ingested.created} new); stopped: ${stopReason}`;
   },
 
   /**

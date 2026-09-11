@@ -445,3 +445,17 @@ a.chip:hover { border-color: var(--accent-dim); color: var(--accent); }
 .route-why { margin: 0 0 0.55rem; color: var(--muted); font-size: 0.86rem; line-height: 1.6; }
 .route-actions { margin: 0 0 0.6rem; padding-left: 1.1rem; }
 .route-actions li { font-size: 0.85rem; line-height: 1.65; margin-bottom: 0.2rem; }
+
+/* --- Paired search probes -------------------------------------------------- */
+.probe-list { display: flex; flex-wrap: wrap; gap: 0.4rem; }
+.chip.probe { display: inline-flex; align-items: center; gap: 0.35rem; }
+.chip-x {
+  background: none;
+  border: none;
+  color: var(--dim);
+  cursor: pointer;
+  padding: 0;
+  font-size: 0.95rem;
+  line-height: 1;
+}
+.chip-x:hover { color: var(--bad); }

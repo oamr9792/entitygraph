@@ -1,4 +1,4 @@
-import { h, api, fmt, disclaimer, toast, navigate, sortableTable, state } from '../app.js';
+import { h, api, fmt, disclaimer, toast, navigate, sortableTable, state, clear } from '../app.js';
 
 /** §74 — the manual review queue for the 0.40–0.69 confidence band. */
 export async function reviewView({ params }) {
@@ -65,6 +65,72 @@ export async function reviewView({ params }) {
   );
 }
 
+/**
+ * §9 — paired search probes.
+ *
+ * The name-only corpus search returns the provider's top-relevance slice,
+ * ordered by something that has nothing to do with what is being investigated.
+ * A subject that matters can sit in hundreds of indexed documents and never
+ * appear in it — on the entity this was built for, 750 documents paired the
+ * name with a controversy and the name search surfaced one of them.
+ *
+ * So an analyst can name the subjects they already know exist. Each becomes
+ * its own filtered query on the next build.
+ */
+function probeTermsPanel(entityId, entity) {
+  let terms = [];
+  try { terms = JSON.parse(entity?.probe_terms ?? '[]'); } catch { terms = []; }
+
+  const list = h('div', { class: 'probe-list' });
+  const input = h('input', { type: 'text', placeholder: 'Epstein', style: { width: '14rem' } });
+
+  const save = async (next) => {
+    try {
+      await api(`/api/entities/${entityId}`, { method: 'PATCH', body: { probe_terms: next } });
+      terms = next;
+      paint();
+      toast('Saved — takes effect on the next build', 'success');
+    } catch (err) { toast(err.message, 'error'); }
+  };
+
+  const paint = () => {
+    clear(list).append(
+      ...(terms.length
+        ? terms.map((t) =>
+            h('span', { class: 'chip probe' }, t,
+              h('button', {
+                class: 'chip-x',
+                title: 'Remove',
+                onclick: () => save(terms.filter((x) => x !== t)),
+              }, '×'))
+          )
+        : [h('span', { class: 'small dim' }, 'None. The corpus is searched by name alone.')])
+    );
+  };
+  paint();
+
+  const add = () => {
+    const value = input.value.trim();
+    if (!value || terms.includes(value)) return;
+    input.value = '';
+    save([...terms, value]);
+  };
+  input.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); add(); } });
+
+  return h('div', { class: 'panel' },
+    h('h2', {}, 'Paired search probes', h('span', { class: 'small dim' }, 'applied on the next build')),
+    h('div', { class: 'panel-body' },
+      h('p', { class: 'small muted', style: { marginTop: 0 } },
+        'Searching the name alone returns whatever the provider ranks highest for it, which is often not the coverage that matters. Name a subject here and it gets its own query — documents mentioning both the entity and that term, regardless of where they sit in the default ordering.'),
+      list,
+      h('div', { class: 'toolbar', style: { marginTop: '0.7rem' } },
+        input,
+        h('button', { onclick: add }, 'Add probe')
+      )
+    )
+  );
+}
+
 /** §7 — the identity profile, editable, because §6 depends on it. */
 export async function identityView({ params }) {
   const data = await api(`/api/entities/${params.id}`);
@@ -116,6 +182,7 @@ export async function identityView({ params }) {
           )
         )
       ),
+      probeTermsPanel(params.id, data.entity),
       h('div', { class: 'panel' },
         h('h2', {}, 'Names searched (§10)'),
         h('div', { class: 'panel-body' },

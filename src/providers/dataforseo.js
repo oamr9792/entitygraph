@@ -134,14 +134,24 @@ export function toDocumentCandidate(item, { provider = 'dataforseo' } = {}) {
  * exact-phrase match ("John Smith"); quoting is the caller's decision because
  * alias searches (§10) sometimes want the unquoted form.
  */
-export async function contentSearch(keyword, { searchMode = 'as_is', limit = 100, offset = 0, filters = null, entityId, jobId, force } = {}) {
-  const task = {
+/**
+ * The Content Analysis request body, as a pure function so the parts that are
+ * easy to drop silently — the pairing filter especially — can be asserted
+ * without a network call. A dropped filter degrades to the name-only search
+ * and nothing about the result looks wrong.
+ */
+export function contentSearchTask({ keyword, searchMode = 'as_is', limit = 100, offset = 0, filters = null }) {
+  return {
     keyword,
     search_mode: searchMode,
     limit: Math.min(1000, limit),
     offset,
     ...(filters ? { filters } : {}),
   };
+}
+
+export async function contentSearch(keyword, { searchMode = 'as_is', limit = 100, offset = 0, filters = null, entityId, jobId, force } = {}) {
+  const task = contentSearchTask({ keyword, searchMode, limit, offset, filters });
   const { result, cost } = await call(ENDPOINTS.content_search, task, { entityId, jobId, force });
   const page = result?.[0] ?? {};
   return {
@@ -158,7 +168,26 @@ export async function contentSearch(keyword, { searchMode = 'as_is', limit = 100
  * why it stopped, because "we stopped early" is information the Coverage
  * Confidence panel has to show (§70/§71).
  */
-export async function contentSearchAll(keyword, { searchMode = 'as_is', pageSize = 100, maxDocuments = 1000, entityId, jobId, force, onPage = null } = {}) {
+/**
+ * Documents citing `keyword` that also mention `term`.
+ *
+ * The plain name search returns the provider's own top-relevance slice, which
+ * for a well-known person is a tiny fraction of what it holds and is ordered by
+ * something that has nothing to do with what we are investigating. A subject
+ * that matters — a controversy, a former employer, a person — can sit in
+ * hundreds of indexed documents and never appear in the first several hundred
+ * results for the name alone.
+ *
+ * `filters` is the provider's own mechanism for this and it works as
+ * documented. Note that `keyword_fields` does NOT: it broadens the search
+ * rather than narrowing it, returning documents matching the field term
+ * regardless of the keyword. Verified against the live API — searching a name
+ * with a keyword_fields term returned four million results about unrelated
+ * people.
+ */
+export const pairedFilter = (term, field = 'content_info.snippet') => [[field, 'like', `%${term}%`]];
+
+export async function contentSearchAll(keyword, { searchMode = 'as_is', pageSize = 100, maxDocuments = 1000, filters = null, entityId, jobId, force, onPage = null } = {}) {
   const items = [];
   let offset = 0;
   let total = 0;
@@ -167,7 +196,7 @@ export async function contentSearchAll(keyword, { searchMode = 'as_is', pageSize
   for (;;) {
     let page;
     try {
-      page = await contentSearch(keyword, { searchMode, limit: pageSize, offset, entityId, jobId, force });
+      page = await contentSearch(keyword, { searchMode, limit: pageSize, offset, filters, entityId, jobId, force });
     } catch (err) {
       // A budget or quota stop is a normal outcome of a deliberately bounded
       // crawl, not a failure of the crawl.

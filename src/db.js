@@ -58,6 +58,10 @@ CREATE TABLE IF NOT EXISTS entities (
                   CHECK (status IN ('new','building','ready','error')),
   -- Per-entity overrides of MODEL. JSON; empty object means "use the defaults".
   model_overrides TEXT NOT NULL DEFAULT '{}',
+  -- Terms to pair with the name when searching the corpus (§9). The plain
+  -- name search returns the provider's own top-relevance slice; a subject that
+  -- matters can sit in hundreds of indexed documents and never appear in it.
+  probe_terms     TEXT NOT NULL DEFAULT '[]',
   max_documents   INTEGER,
   max_api_cost_usd REAL,
   created_at      TEXT NOT NULL DEFAULT (datetime('now')),

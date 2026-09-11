@@ -45,6 +45,12 @@ entityRoutes.patch('/api/entities/:id', async (req, res, params) => {
   const entity = getEntity(Number(params.id));
   const body = await readJson(req);
   const fields = ['canonical_name', 'description', 'wikidata_qid', 'wikipedia_url', 'max_documents', 'max_api_cost_usd'];
+  // Probe terms arrive as an array and are stored as JSON, so they are handled
+  // separately from the scalar fields above.
+  if (Array.isArray(body.probe_terms)) {
+    const terms = body.probe_terms.map((t) => String(t).trim()).filter(Boolean).slice(0, 25);
+    run(`UPDATE entities SET probe_terms = ? WHERE id = ?`, JSON.stringify(terms), entity.id);
+  }
   for (const field of fields) {
     if (field in body) run(`UPDATE entities SET ${field} = ? WHERE id = ?`, body[field], entity.id);
   }
