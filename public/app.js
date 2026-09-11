@@ -37,12 +37,25 @@ export function toast(message, kind = '') {
 export async function api(path, { method = 'GET', body = null } = {}) {
   const res = await fetch(path, {
     method,
-    headers: body ? { 'content-type': 'application/json' } : {},
+    // The server requires this header on every mutating request. A browser
+    // will not let a cross-origin page set it without a preflight, and no
+    // permissive CORS headers are sent — so it closes the CSRF hole that
+    // SameSite=Lax alone leaves open.
+    headers: {
+      'x-requested-with': 'entitygraph',
+      ...(body ? { 'content-type': 'application/json' } : {}),
+    },
     body: body ? JSON.stringify(body) : undefined,
   });
   let payload = null;
   try { payload = await res.json(); } catch { /* empty body */ }
   if (!res.ok) {
+    // A session that expired mid-use should return the user to the login
+    // screen rather than showing them an error they cannot act on.
+    if (res.status === 401 && !path.startsWith('/api/auth/') && path !== '/api/me') {
+      state.user = null;
+      render();
+    }
     const message = payload?.error ?? `${res.status} ${res.statusText}`;
     throw Object.assign(new Error(message), { status: res.status, details: payload?.details });
   }
@@ -238,7 +251,7 @@ export function navigate(hash) {
   else location.hash = hash;
 }
 
-export const state = { settings: null };
+export const state = { settings: null, user: null };
 
 function matchRoute(path) {
   for (const r of routes) {
@@ -256,6 +269,29 @@ function matchRoute(path) {
 async function render() {
   runTeardowns();
   const app = document.getElementById('app');
+
+  // The gate. Nothing else renders without a session — not the shell, not the
+  // navigation, not a cached screen behind a modal. The server enforces this
+  // too; doing it here as well means an expired session shows a login form
+  // rather than a wall of failed requests.
+  if (!state.user) {
+    const { loginView } = await import('./views/login.js');
+    clear(app).append(loginView({ onSignedIn: () => render() }));
+    app.classList.remove('app-loading');
+    return;
+  }
+  if (state.user.must_change_password) {
+    const { changePasswordView } = await import('./views/login.js');
+    clear(app).append(changePasswordView({
+      onDone: async () => {
+        state.user = { ...state.user, must_change_password: false };
+        render();
+      },
+    }));
+    app.classList.remove('app-loading');
+    return;
+  }
+
   const raw = location.hash.replace(/^#/, '') || '/';
   const [path, queryString] = raw.split('?');
   const query = new URLSearchParams(queryString ?? '');
@@ -315,8 +351,21 @@ function shell(content, path) {
         h('div', { class: 'group-label' }, 'System'),
         link('/settings', 'Settings & model')
       ),
-      h('div', { class: 'small dim', style: { marginTop: 'auto' } },
-        'PIAS is an external estimate. It is not a Google score.')
+      h('div', { class: 'sidebar-foot' },
+        h('div', { class: 'signed-in' },
+          h('span', { class: 'who', title: state.user?.email ?? '' }, state.user?.name ?? state.user?.email ?? ''),
+          h('button', {
+            class: 'small ghost',
+            onclick: async () => {
+              try { await api('/api/auth/logout', { method: 'POST' }); } catch { /* sign out regardless */ }
+              state.user = null;
+              state.settings = null;
+              render();
+            },
+          }, 'Sign out')
+        ),
+        h('div', { class: 'small dim' }, 'PIAS is an external estimate. It is not a Google score.')
+      )
     ),
     h('main', { class: 'main' }, content)
   );
@@ -345,7 +394,10 @@ route('/associations/:id', () => import('./views/evidence.js').then((m) => m.evi
 
 window.addEventListener('hashchange', render);
 
-api('/api/settings')
-  .then((settings) => { state.settings = settings; })
-  .catch(() => { /* the screens degrade without it */ })
+// Identity first: /api/settings is behind the gate, so asking who we are has
+// to come before asking for anything else.
+api('/api/me')
+  .then(({ user }) => { state.user = user; })
+  .catch(() => { state.user = null; })
+  .then(() => (state.user ? api('/api/settings').then((s) => { state.settings = s; }).catch(() => {}) : null))
   .finally(render);

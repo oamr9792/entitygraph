@@ -485,6 +485,48 @@ CREATE TABLE IF NOT EXISTS settings (
   value      TEXT NOT NULL,
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+-- ===========================================================================
+-- Access control
+--
+-- Single-tenant: one firm, its own analysts, its own clients. Roles are
+-- 'admin' (can manage users) and 'analyst' (everything else), because a
+-- finer-grained matrix would be ceremony over a team small enough to know
+-- each other's names.
+-- ===========================================================================
+CREATE TABLE IF NOT EXISTS app_user (
+  id            INTEGER PRIMARY KEY,
+  email         TEXT NOT NULL UNIQUE,
+  name          TEXT NOT NULL,
+  password_hash TEXT,
+  role          TEXT NOT NULL DEFAULT 'analyst' CHECK (role IN ('admin','analyst')),
+  status        TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','suspended')),
+  must_change_password INTEGER NOT NULL DEFAULT 0,
+  last_login_at TEXT,
+  created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+  deleted_at    TEXT
+);
+
+CREATE TABLE IF NOT EXISTS app_session (
+  id         TEXT PRIMARY KEY,
+  user_id    INTEGER NOT NULL REFERENCES app_user(id) ON DELETE CASCADE,
+  expires_at TEXT NOT NULL,
+  ip         TEXT,
+  user_agent TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_session_user ON app_session(user_id);
+
+-- Who did what. Manual review decisions already have their own table; this is
+-- for the actions that change access or spend money.
+CREATE TABLE IF NOT EXISTS audit_log (
+  id         INTEGER PRIMARY KEY,
+  user_id    INTEGER REFERENCES app_user(id) ON DELETE SET NULL,
+  action     TEXT NOT NULL,
+  detail     TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_audit_created ON audit_log(created_at);
 `;
 
 db.exec(SCHEMA);

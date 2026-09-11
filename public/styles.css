@@ -186,7 +186,7 @@ button.small { padding: 0.2rem 0.45rem; font-size: 0.74rem; }
 
 label.field { display: block; margin-bottom: 0.75rem; font-size: 0.82rem; color: var(--muted); }
 label.field span.hint { display: block; color: var(--dim); font-size: 0.74rem; margin-top: 0.15rem; }
-input[type=text], input[type=number], input[type=date], select, textarea {
+input[type=text], input[type=number], input[type=date], input[type=email], input[type=password], select, textarea {
   width: 100%; margin-top: 0.25rem; background: var(--bg); color: var(--text);
   border: 1px solid var(--line); border-radius: 5px; padding: 0.4rem 0.55rem; font: inherit; font-size: 0.85rem;
 }
@@ -338,3 +338,57 @@ input.ceiling {
 .disjoint .muted { margin-bottom: 0.45rem; }
 a.chip { text-decoration: none; }
 a.chip:hover { border-color: var(--accent-dim); color: var(--accent); }
+
+/* --- Authentication -------------------------------------------------------- */
+.auth-screen {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1.2rem;
+  padding: 2rem 1rem;
+}
+.auth-card {
+  width: 100%;
+  max-width: 24rem;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 1.6rem;
+}
+.auth-card .brand { margin-bottom: 1rem; }
+.auth-card h1 { font-size: 1.25rem; margin: 0 0 0.3rem; }
+.auth-form { display: flex; flex-direction: column; gap: 0.9rem; margin-top: 1rem; }
+.auth-form .field { display: flex; flex-direction: column; gap: 0.3rem; }
+.auth-form button { width: 100%; justify-content: center; }
+.form-error {
+  color: var(--bad);
+  font-size: 0.85rem;
+  border-left: 2px solid var(--bad);
+  padding-left: 0.6rem;
+}
+.auth-footnote {
+  max-width: 30rem;
+  text-align: center;
+  color: var(--dim);
+  font-size: 0.78rem;
+  line-height: 1.5;
+  margin: 0;
+}
+.sidebar-foot { margin-top: auto; display: flex; flex-direction: column; gap: 0.6rem; }
+.signed-in {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding-top: 0.6rem;
+  border-top: 1px solid var(--line-soft);
+}
+.signed-in .who {
+  font-size: 0.8rem;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

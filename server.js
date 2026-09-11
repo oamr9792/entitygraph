@@ -6,14 +6,20 @@ import { recoverOrphanedJobs } from './src/jobs/queue.js';
 import { llmStatus } from './src/providers/llm/index.js';
 import * as dfs from './src/providers/dataforseo.js';
 
+import { requireAuth, requireCsrf, bootstrapFirstUser, reportBootstrap, purgeExpiredSessions } from './src/auth.js';
+
+import { authRoutes } from './src/routes/auth.js';
 import { entityRoutes } from './src/routes/entities.js';
 import { analysisRoutes } from './src/routes/analysis.js';
 import { evidenceRoutes } from './src/routes/evidence.js';
 
 const router = new Router();
-for (const group of [entityRoutes, analysisRoutes, evidenceRoutes]) {
+for (const group of [authRoutes, entityRoutes, analysisRoutes, evidenceRoutes]) {
   router.routes.push(...group.routes);
 }
+
+// The only endpoints reachable without a session. Deliberately an allow-list.
+const PUBLIC_ROUTES = new Set(['/api/me', '/api/auth/login', '/api/auth/logout']);
 
 // Before anything can make an outbound call: pick up any locally-installed CA
 // certificates. TLS-inspecting antivirus and corporate proxies re-sign HTTPS
@@ -38,6 +44,11 @@ const server = http.createServer(async (req, res) => {
 
   try {
     if (pathname.startsWith('/api/')) {
+      requireCsrf(req);
+      // Everything is closed by default. The exceptions are the endpoints the
+      // login screen itself needs — a deny-list here would eventually leak a
+      // route someone forgot to add to it.
+      if (!PUBLIC_ROUTES.has(pathname)) requireAuth(req);
       const match = router.match(req.method, pathname);
       if (!match) return json(res, 404, { error: `no route for ${req.method} ${pathname}` });
       if (match.methodMismatch) return json(res, 405, { error: `${req.method} not allowed on ${pathname}` });
@@ -77,6 +88,8 @@ server.listen(config.port, config.host, () => {
   console.log('');
   console.log(`  ${SCORE_DISCLAIMER}`);
   console.log('');
+  purgeExpiredSessions();
+  reportBootstrap(bootstrapFirstUser());
   const recovered = recoverOrphanedJobs();
   if (recovered) console.log(`  [jobs] marked ${recovered} interrupted job(s) as failed`);
 });

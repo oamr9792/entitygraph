@@ -290,3 +290,63 @@ test('re-extracting a merged label returns the survivor instead of colliding', a
 
   assert.ok(get(`SELECT 1 AS ok`), 'database still usable');
 });
+
+/**
+ * §19 — the containment rule that tightens clustering without over-merging.
+ *
+ * The danger of merging on containment is that it destroys real distinctions:
+ * "youth hockey" is not "hockey", "education philanthropy" is not
+ * "philanthropy". The guard is that only *generic type words* may differ — the
+ * words that say what form a thing takes rather than which thing it is. These
+ * assertions are the boundary of that guard, in both directions.
+ */
+test('§19 generic type words fold together, narrowing words do not', async () => {
+  const { isGenericVariant } = await import('../src/services/canonicalize.js');
+
+  for (const [general, variant] of [
+    ['Private Equity', 'Private Equity Funds'],
+    ['Private Equity', 'private equity firm'],
+    ['Private Equity', 'Private Equity Industry'],
+    ['Hockey', 'Hockey Operations'],
+  ]) {
+    assert.equal(isGenericVariant(general, variant), true, `${variant} should fold into ${general}`);
+  }
+
+  for (const [general, narrower] of [
+    ['Hockey', 'Youth Hockey'],
+    ['Philanthropy', 'Education Philanthropy'],
+    ['Investment', 'Sports Investment'],
+    ['Capital', 'Blackstreet Capital'],
+  ]) {
+    assert.equal(isGenericVariant(general, narrower), false, `${narrower} must stay distinct from ${general}`);
+  }
+
+  // Direction matters: the longer label never absorbs the shorter one.
+  assert.equal(isGenericVariant('Private Equity Funds', 'Private Equity'), false);
+});
+
+test('§16 a label that is really a sentence is rejected, not stored as an entity', async () => {
+  const { isSentenceLike, upsertAssociation } = await import('../src/services/canonicalize.js');
+
+  assert.equal(
+    isSentenceLike('Black Bear Sports Group, Inc. is a privately held company formed by Murry Gunty in 2015'),
+    true
+  );
+  for (const good of [
+    'Private Equity',
+    'Investment Advisers Act of 1940',
+    'U.S. Securities and Exchange Commission',
+    'Unregistered broker-dealer activity',
+  ]) {
+    assert.equal(isSentenceLike(good), false, `${good} is a legitimate label`);
+  }
+
+  assert.equal(
+    upsertAssociation(entityId, {
+      canonical_label: 'Acme Corp is a company that was founded by someone in 1998',
+      kind: 'named_entity',
+    }),
+    null,
+    'a sentence must not create an association'
+  );
+});

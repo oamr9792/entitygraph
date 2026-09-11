@@ -24,9 +24,68 @@ import config from '../config.js';
 // weak, so its threshold is lower — it is a shortlister, not a judge.
 const SHORTLIST_THRESHOLD = () => (config.embeddings.provider === 'openai' ? 0.82 : 0.3);
 
+/**
+ * Words that describe what *kind of thing* something is, rather than which
+ * thing it is. "Private equity" and "private equity funds" name one concept;
+ * the second just says what form it takes.
+ *
+ * This list is the whole safety mechanism for containment merging, so it stays
+ * narrow on purpose. "Youth hockey" must never fold into "hockey" and
+ * "education philanthropy" must never fold into "philanthropy" — those extra
+ * words restrict the meaning. These do not.
+ */
+const GENERIC_TYPE_WORDS = new Set([
+  'activity', 'activities', 'business', 'businesses', 'company', 'companies',
+  'firm', 'firms', 'fund', 'funds', 'group', 'industry', 'industries',
+  'management', 'market', 'markets', 'operation', 'operations', 'practice',
+  'sector', 'sectors', 'service', 'services', 'space', 'work', 'works',
+  'investing', 'investment', 'investments',
+]);
+
+/**
+ * True when `longer` is `shorter` plus nothing but generic type words — in
+ * either position, so "private equity fund" and "fund of private equity" both
+ * reduce. Order of the shared tokens must be preserved; an anagram is not a
+ * variant.
+ */
+export function isGenericVariant(shorter, longer) {
+  const a = labelKey(shorter).split(' ').filter(Boolean);
+  const b = labelKey(longer).split(' ').filter(Boolean);
+  if (!a.length || b.length <= a.length) return false;
+
+  // Walk b, consuming a's tokens in order; every unconsumed token must be
+  // generic.
+  let ai = 0;
+  const leftovers = [];
+  for (const token of b) {
+    if (ai < a.length && token === a[ai]) ai += 1;
+    else leftovers.push(token);
+  }
+  if (ai !== a.length) return false;
+  return leftovers.length > 0 && leftovers.every((t) => GENERIC_TYPE_WORDS.has(t));
+}
+
+// An extracted "entity" that runs to a full clause is a failed extraction, not
+// a name. These are rejected at the door rather than cluttering the graph and
+// the merge shortlist — the evidence text still holds the sentence.
+const MAX_LABEL_TOKENS = 8;
+const CLAUSE_MARKERS = /\b(is|was|are|were|has|have|had|formed by|owned by|founded by|which|that|who)\b/i;
+
+export function isSentenceLike(label) {
+  const text = normaliseWhitespace(label);
+  if (!text) return true;
+  const tokens = text.split(' ').filter(Boolean);
+  if (tokens.length > MAX_LABEL_TOKENS) return true;
+  // A clause marker only condemns a label that is also long enough to be a
+  // sentence; "Investment Advisers Act of 1940" contains none of them, and
+  // something like "Who's Who" should survive on length.
+  return tokens.length >= 5 && CLAUSE_MARKERS.test(text);
+}
+
 export function upsertAssociation(entityId, { canonical_label, kind, category = 'other' }) {
   const label = normaliseWhitespace(canonical_label);
   if (!label) return null;
+  if (isSentenceLike(label)) return null;
   const key = labelKey(label);
 
   // Match on the normalised key rather than the literal label, so
@@ -196,12 +255,52 @@ const CLUSTER_SCHEMA = {
  * Returns both what it merged and what it only suggested, because the QA
  * screen needs to show an analyst the pairs the model would not commit to.
  */
-export async function canonicaliseAssociations(entityId, { entityJobId = null, confirm = true, maxPairs = 120 } = {}) {
+export async function canonicaliseAssociations(entityId, { entityJobId = null, confirm = true, maxPairs = 400 } = {}) {
+  // Retire failed extractions before clustering. A label that is really a
+  // sentence cannot be merged with anything sensibly, and it pollutes the
+  // embedding shortlist that the expensive pass works from. Excluded rather
+  // than deleted: the evidence stays, and a human can reverse it.
+  const retired = [];
+  for (const a of all(`SELECT * FROM associations WHERE entity_id = ? AND status = 'active'`, entityId)) {
+    if (!isSentenceLike(a.canonical_label)) continue;
+    run(`UPDATE associations SET status = 'excluded', updated_at = datetime('now') WHERE id = ?`, a.id);
+    retired.push(a.canonical_label);
+  }
+
+  // Deterministic pass: fold "private equity funds" into "private equity"
+  // before spending anything on embeddings or judgement calls. Shortest label
+  // wins, so the survivor is the general form rather than whichever happened to
+  // be extracted first.
+  const genericMerges = [];
+  const byKind = new Map();
+  for (const a of all(`SELECT * FROM associations WHERE entity_id = ? AND status = 'active'`, entityId)) {
+    if (!byKind.has(a.kind)) byKind.set(a.kind, []);
+    byKind.get(a.kind).push(a);
+  }
+  for (const group of byKind.values()) {
+    group.sort((x, y) => labelKey(x.canonical_label).length - labelKey(y.canonical_label).length);
+    const absorbed = new Set();
+    for (let i = 0; i < group.length; i += 1) {
+      if (absorbed.has(group[i].id)) continue;
+      for (let j = i + 1; j < group.length; j += 1) {
+        if (absorbed.has(group[j].id)) continue;
+        if (!isGenericVariant(group[i].canonical_label, group[j].canonical_label)) continue;
+        const res = mergeAssociations(group[i].id, group[j].id);
+        if (res.merged) {
+          genericMerges.push({ kept: group[i].canonical_label, dropped: group[j].canonical_label, method: 'generic_variant' });
+          absorbed.add(group[j].id);
+        }
+      }
+    }
+  }
+
   const associations = all(
     `SELECT * FROM associations WHERE entity_id = ? AND status = 'active' ORDER BY id`,
     entityId
   );
-  if (associations.length < 2) return { merged: [], suggested: [], compared: 0 };
+  if (associations.length < 2) {
+    return { merged: genericMerges, suggested: [], compared: 0, retired };
+  }
 
   // Embed the label plus its recorded surface forms: "Philanthropy" alone is a
   // thin string, but "Philanthropy / charitable giving / charity work" carries
@@ -227,17 +326,34 @@ export async function canonicaliseAssociations(entityId, { entityJobId = null, c
   }
   pairs.sort((x, y) => y.similarity - x.similarity);
 
-  const merged = [];
+  const merged = [...genericMerges];
   const suggested = [];
-  const gone = new Set();
+  // Maps an absorbed association to its survivor, so a chain can keep going:
+  // when A absorbs B and C is later judged the same as B, C should be compared
+  // against A rather than silently dropped. The old code skipped any pair
+  // touching an already-merged row, which capped consolidation at one merge per
+  // association and left obvious duplicates behind.
+  const absorbedInto = new Map();
+  const survivor = (association) => {
+    let current = association;
+    const seen = new Set([current.id]);
+    while (absorbedInto.has(current.id)) {
+      const next = absorbedInto.get(current.id);
+      if (seen.has(next.id)) break;
+      seen.add(next.id);
+      current = next;
+    }
+    return current;
+  };
   const llm = getLlm();
 
-  for (const pair of pairs.slice(0, maxPairs)) {
-    if (gone.has(pair.a.id) || gone.has(pair.b.id)) continue;
+  for (const raw of pairs.slice(0, maxPairs)) {
+    const pair = { ...raw, a: survivor(raw.a), b: survivor(raw.b) };
+    if (pair.a.id === pair.b.id) continue;
 
     if (labelKey(pair.a.canonical_label) === labelKey(pair.b.canonical_label)) {
       const res = mergeAssociations(pair.a.id, pair.b.id);
-      if (res.merged) { merged.push({ ...pair, method: 'normalised_label' }); gone.add(pair.b.id); }
+      if (res.merged) { merged.push({ ...pair, method: 'normalised_label' }); absorbedInto.set(pair.b.id, pair.a); }
       continue;
     }
 
@@ -267,7 +383,7 @@ export async function canonicaliseAssociations(entityId, { entityJobId = null, c
       const res = mergeAssociations(keep.id, drop.id);
       if (res.merged) {
         merged.push({ ...pair, method: 'llm_confirmed', kept: keep.canonical_label, confidence: verdict.data.confidence });
-        gone.add(drop.id);
+        absorbedInto.set(drop.id, keep);
       }
     } else {
       suggested.push({

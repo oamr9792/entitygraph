@@ -74,6 +74,30 @@ export async function readJson(req) {
   }
 }
 
+export function parseCookies(req) {
+  const header = req.headers.cookie;
+  if (!header) return {};
+  const out = {};
+  for (const part of header.split(';')) {
+    const idx = part.indexOf('=');
+    if (idx < 0) continue;
+    out[part.slice(0, idx).trim()] = decodeURIComponent(part.slice(idx + 1).trim());
+  }
+  return out;
+}
+
+export function setCookie(res, name, value, opts = {}) {
+  const bits = [`${name}=${encodeURIComponent(value)}`];
+  bits.push(`Path=${opts.path || '/'}`);
+  if (opts.maxAge !== undefined) bits.push(`Max-Age=${Math.floor(opts.maxAge)}`);
+  bits.push(`SameSite=${opts.sameSite || 'Lax'}`);
+  if (opts.httpOnly !== false) bits.push('HttpOnly');
+  if (opts.secure) bits.push('Secure');
+  const existing = res.getHeader('Set-Cookie');
+  const list = existing ? (Array.isArray(existing) ? existing : [existing]) : [];
+  res.setHeader('Set-Cookie', [...list, bits.join('; ')]);
+}
+
 // --- Response helpers -------------------------------------------------------
 
 export function json(res, status, payload) {

@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 
 export const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -34,6 +35,43 @@ const bool = (v, dflt = false) =>
   v === undefined || v === '' ? dflt : ['1', 'true', 'yes', 'on'].includes(String(v).toLowerCase());
 const int = (v, dflt) => (v === undefined || v === '' || Number.isNaN(Number(v)) ? dflt : Number(v));
 const num = int;
+
+/**
+ * Secrets have to exist for the app to be safe, but demanding that someone
+ * generate a base64 key before they can see the login screen is a bad first
+ * run. In development we generate and persist one into .env; in production we
+ * refuse to start without it, because a session secret that changes on every
+ * redeploy silently logs everyone out and, worse, invites someone to "fix" it
+ * with a hardcoded default.
+ */
+function resolveSecret(name, isProduction) {
+  const existing = process.env[name];
+  if (existing) return existing;
+  if (isProduction) {
+    throw new Error(
+      `${name} is not set. Generate one with:\n` +
+        `  node -e "console.log(require('node:crypto').randomBytes(32).toString('base64'))"\n` +
+        `and set it in the environment before starting in production.`
+    );
+  }
+  const generated = crypto.randomBytes(32).toString('base64');
+  const envPath = path.join(ROOT, '.env');
+  const line = `${name}=${generated}\n`;
+  if (fs.existsSync(envPath)) {
+    const body = fs.readFileSync(envPath, 'utf8');
+    fs.writeFileSync(
+      envPath,
+      new RegExp(`^${name}=\\s*$`, 'm').test(body)
+        ? body.replace(new RegExp(`^${name}=\\s*$`, 'm'), line.trimEnd())
+        : body.replace(/\n*$/, '\n') + line
+    );
+  } else {
+    fs.writeFileSync(envPath, line);
+  }
+  process.env[name] = generated;
+  console.warn(`[config] generated ${name} and wrote it to .env (development only)`);
+  return generated;
+}
 
 const NODE_ENV = process.env.NODE_ENV || 'development';
 
@@ -150,6 +188,15 @@ export const config = {
   port: int(process.env.PORT, 8788),
   host: process.env.HOST || '127.0.0.1',
   dbPath: path.resolve(ROOT, process.env.DB_PATH || './data/entitygraph.db'),
+
+  sessionSecret: resolveSecret('SESSION_SECRET', NODE_ENV === 'production'),
+  sessionTtlHours: int(process.env.SESSION_TTL_HOURS, 12),
+  trustProxy: bool(process.env.TRUST_PROXY, NODE_ENV === 'production'),
+  bootstrap: {
+    email: process.env.BOOTSTRAP_ADMIN_EMAIL || '',
+    name: process.env.BOOTSTRAP_ADMIN_NAME || 'Administrator',
+    password: process.env.BOOTSTRAP_ADMIN_PASSWORD || '',
+  },
 
   dataforseo:
     process.env.DATAFORSEO_LOGIN && process.env.DATAFORSEO_PASSWORD
