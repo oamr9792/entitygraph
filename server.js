@@ -71,7 +71,7 @@ server.listen(config.port, config.host, () => {
   console.log('');
   console.log('  EntityGraph — Entity Association Intelligence');
   console.log(`  http://${config.host}:${config.port}`);
-  console.log(`  env: ${config.env}   db: ${config.dbPath}`);
+  console.log(`  env: ${config.env}   build: ${config.version.commit}   db: ${config.dbPath}`);
   console.log('');
   console.log(`  corpus:     ${dfs.isConfigured() ? 'DataForSEO configured' : 'DataForSEO NOT configured — set DATAFORSEO_LOGIN / DATAFORSEO_PASSWORD in .env'}`);
   console.log(

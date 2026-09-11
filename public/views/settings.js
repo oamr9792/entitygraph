@@ -67,7 +67,14 @@ export async function settingsView() {
 
   return h('div', {},
     h('div', { class: 'page-head' }, h('div', {}, h('h1', {}, 'Settings & model'),
-      h('div', { class: 'sub' }, 'Credentials come from .env. Model parameters are shown here so nothing about the score is hidden.'))),
+      h('div', { class: 'sub' },
+        'Credentials come from the environment. Model parameters are shown here so nothing about the score is hidden.'),
+      // Which commit is actually serving this page. The question "is my fix
+      // live yet" should be answerable from the app, not from a dashboard in
+      // another tab.
+      h('div', { class: 'sub mono small dim' },
+        `build ${settings.build?.commit ?? 'unknown'}`,
+        settings.build?.source === 'none' ? ' (not determinable in this environment)' : ''))),
     disclaimer(settings.disclaimer),
     providersPanel,
     h('div', { class: 'split-2' },

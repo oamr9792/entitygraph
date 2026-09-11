@@ -1,4 +1,5 @@
 import { Router, ok, readJson, badRequest, notFound, intParam } from '../http.js';
+import config from '../config.js';
 import {
   login, logout, authenticate, requireAuth, requireAdmin, changePassword,
   listUsers, createUser, setUserStatus, activeSessionsFor, auditTrail, destroySession,
@@ -12,7 +13,9 @@ export const authRoutes = new Router();
  * signed in" is a normal state on first load, not an error worth logging.
  */
 authRoutes.get('/api/me', (req, res) => {
-  ok(res, { user: authenticate(req) });
+  // The build is public on purpose: it is how anyone — including a deploy
+  // check — answers 'which version is running' without signing in first.
+  ok(res, { user: authenticate(req), build: config.version });
 });
 
 authRoutes.post('/api/auth/login', async (req, res) => {

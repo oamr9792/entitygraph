@@ -73,6 +73,31 @@ function resolveSecret(name, isProduction) {
   return generated;
 }
 
+/**
+ * The commit this process is running. Read from the host's environment where
+ * one is provided, otherwise from the local git directory — never shelling out
+ * to `git`, because a deployed container usually has neither the binary nor
+ * the working tree.
+ */
+function resolveVersion() {
+  const fromEnv =
+    process.env.RENDER_GIT_COMMIT ||     // Render
+    process.env.RAILWAY_GIT_COMMIT_SHA || // Railway
+    process.env.SOURCE_VERSION ||         // Heroku
+    process.env.GIT_COMMIT ||
+    '';
+  if (fromEnv) return { commit: fromEnv.slice(0, 7), source: 'environment' };
+
+  try {
+    const head = fs.readFileSync(path.join(ROOT, '.git', 'HEAD'), 'utf8').trim();
+    const ref = head.startsWith('ref: ') ? head.slice(5) : null;
+    const sha = ref ? fs.readFileSync(path.join(ROOT, '.git', ref), 'utf8').trim() : head;
+    return { commit: sha.slice(0, 7), source: 'git' };
+  } catch {
+    return { commit: 'unknown', source: 'none' };
+  }
+}
+
 const NODE_ENV = process.env.NODE_ENV || 'development';
 
 /**
@@ -188,6 +213,11 @@ export const config = {
   port: int(process.env.PORT, 8788),
   host: process.env.HOST || '127.0.0.1',
   dbPath: path.resolve(ROOT, process.env.DB_PATH || './data/entitygraph.db'),
+
+  // Which build is actually running. Render sets RENDER_GIT_COMMIT; locally we
+  // read git directly. Without this, "is my fix live?" can only be answered by
+  // reading a dashboard in another tab and trusting it.
+  version: resolveVersion(),
 
   sessionSecret: resolveSecret('SESSION_SECRET', NODE_ENV === 'production'),
   sessionTtlHours: int(process.env.SESSION_TTL_HOURS, 12),

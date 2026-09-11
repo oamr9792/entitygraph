@@ -282,6 +282,7 @@ const safeParse = (v) => {
 evidenceRoutes.get('/api/settings', async (req, res) => {
   ok(res, {
     disclaimer: SCORE_DISCLAIMER,
+    build: config.version,
     model: MODEL,
     // The system-wide ceilings (§66). Shown as placeholders wherever a
     // per-entity ceiling can be set, so "blank" reads as a value rather than
