@@ -4,6 +4,7 @@ import { rescoreEntity } from '../services/metrics.js';
 import { mergeAssociations, splitAssociation } from '../services/canonicalize.js';
 import { setManualVerdict } from '../services/disambiguation.js';
 import { clusterMembers } from '../services/duplicates.js';
+import { relatedAssociations, disjointAssociations } from '../services/related.js';
 import { llmStatus } from '../providers/llm/index.js';
 import { listProviders } from '../providers/corpus/index.js';
 import '../providers/corpus/providers.js';
@@ -11,6 +12,22 @@ import * as dfs from '../providers/dataforseo.js';
 import config, { SCORE_DISCLAIMER, MODEL } from '../config.js';
 
 export const evidenceRoutes = new Router();
+
+/**
+ * §17 — what this association travels with, and what carries it.
+ *
+ * Separate from the evidence route because it answers a different question:
+ * not "why does this score what it scores" but "is this actually about the
+ * entity, or is it inherited from something else the entity is attached to".
+ */
+evidenceRoutes.get('/api/associations/:id/related', (req, res, params, url) => {
+  const result = relatedAssociations(Number(params.id), {
+    limit: intParam(url, 'limit', 25, { min: 1, max: 100 }),
+    floor: intParam(url, 'floor', 2, { min: 1, max: 50 }),
+  });
+  if (!result) throw notFound('association not found');
+  ok(res, { ...result, disjoint: disjointAssociations(Number(params.id)) });
+});
 
 /**
  * §48 — the evidence explorer. Every column the brief lists is here, because

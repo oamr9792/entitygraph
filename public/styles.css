@@ -318,3 +318,23 @@ input.ceiling {
   width: 9rem;
   font-family: var(--mono);
 }
+
+/* --- Related associations (§17) -------------------------------------------- */
+.interpretation {
+  margin: 0 0 0.9rem;
+  padding: 0.6rem 0.8rem;
+  border-left: 2px solid var(--accent-dim);
+  background: var(--panel-2);
+  border-radius: 0 4px 4px 0;
+  color: var(--text);
+  font-size: 0.88rem;
+  line-height: 1.55;
+}
+.disjoint {
+  margin-top: 0.9rem;
+  padding-top: 0.8rem;
+  border-top: 1px solid var(--line-soft);
+}
+.disjoint .muted { margin-bottom: 0.45rem; }
+a.chip { text-decoration: none; }
+a.chip:hover { border-color: var(--accent-dim); color: var(--accent); }

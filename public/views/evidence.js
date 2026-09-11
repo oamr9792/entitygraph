@@ -1,4 +1,4 @@
-import { h, api, fmt, sortableTable, disclaimer, toast, navigate } from '../app.js';
+import { h, api, fmt, sortableTable, disclaimer, toast, navigate, clear } from '../app.js';
 
 /**
  * §48 — the evidence explorer.
@@ -6,6 +6,96 @@ import { h, api, fmt, sortableTable, disclaimer, toast, navigate } from '../app.
  * Every column the brief asks for, plus the six factors that multiply into the
  * weighted score, because the screen exists so a number can be taken apart.
  */
+/**
+ * §17 — what this association travels with.
+ *
+ * Loaded after the page renders rather than blocking it, because the evidence
+ * table is what someone came for and this is the follow-up question.
+ *
+ * The column that earns its place is "% of these" — the share of *this*
+ * association's documents that also carry the other one. When that is high and
+ * the reverse is low, the association is riding on something else, and going
+ * after it directly will not work.
+ */
+function relatedPanel(associationId) {
+  const body = h('div', { class: 'panel-body' }, h('div', { class: 'dim small' }, 'Loading…'));
+  const panel = h('div', { class: 'panel' },
+    h('h2', {}, 'What this travels with',
+      h('span', { class: 'small dim' }, 'co-occurrence inside this entity’s corpus')),
+    body
+  );
+
+  api(`/api/associations/${associationId}/related?limit=20`)
+    .then((data) => {
+      clear(body);
+      if (!data.related.length && !data.disjoint.length) {
+        body.append(h('div', { class: 'empty' }, 'No association shares enough documents with this one to report.'));
+        return;
+      }
+
+      body.append(h('p', { class: 'interpretation' }, data.interpretation));
+
+      if (data.related.length) {
+        body.append(sortableTable(
+          [
+            {
+              key: 'label', label: 'Association',
+              render: (r) => h('div', {},
+                h('a', { href: `#/associations/${r.association_id}` }, r.label), ' ',
+                r.carries_this
+                  ? h('span', {
+                      class: `chip ${r.mutual ? 'warn' : 'bad'}`,
+                      title: r.mutual
+                        ? 'Each rarely appears without the other — one story, not an inherited association.'
+                        : 'This association rarely appears without that one, but not the reverse: it is carried by it.',
+                    }, r.mutual ? 'paired' : 'carries this')
+                  : null
+              ),
+            },
+            { key: 'shared', label: 'Shared docs', num: true },
+            {
+              key: 'share_of_this', label: '% of these', num: true,
+              title: 'Share of THIS association’s documents that also carry the other one',
+              render: (r) => fmt.pct(r.share_of_this),
+            },
+            {
+              key: 'share_of_other', label: '% of those', num: true,
+              title: 'Share of the OTHER association’s documents that also carry this one',
+              render: (r) => fmt.pct(r.share_of_other),
+            },
+            {
+              key: 'lift', label: 'Lift', num: true,
+              title: 'How much more often they co-occur than chance. 1.0 is chance; below 1 is avoidance.',
+              render: (r) => h('span', { class: r.lift >= 3 ? 'score-cell' : 'dim' }, r.lift.toFixed(1)),
+            },
+            { key: 'documents', label: 'Its docs', num: true, render: (r) => fmt.n(r.documents) },
+          ],
+          data.related,
+          { initialSort: 'shared' }
+        ));
+      }
+
+      if (data.disjoint.length) {
+        body.append(
+          h('div', { class: 'disjoint' },
+            h('div', { class: 'small muted' },
+              'Shares no document with — separate populations in the corpus, not one connected account:'),
+            data.disjoint.map((d) => h('a', {
+              class: 'chip',
+              href: `#/associations/${d.association_id}`,
+              style: { marginRight: '0.35rem' },
+            }, `${d.label} · ${d.documents}`))
+          )
+        );
+      }
+    })
+    .catch((err) => {
+      clear(body).append(h('div', { class: 'empty' }, `Could not load related associations: ${err.message}`));
+    });
+
+  return panel;
+}
+
 export async function evidenceView({ params }) {
   const data = await api(`/api/associations/${params.id}/evidence?include_excluded=1`);
   const { association, evidence, surface_forms: surfaceForms } = data;
@@ -82,6 +172,7 @@ export async function evidenceView({ params }) {
           )
         )
       : null,
+    relatedPanel(params.id),
     h('div', { class: 'panel' },
       h('h2', {}, 'Supporting evidence'),
       h('div', { class: 'panel-body tight' },
