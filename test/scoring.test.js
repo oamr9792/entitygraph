@@ -248,14 +248,35 @@ test('§53 rank weights run 1.00 to 0.10 and stop at the first page', () => {
   assert.equal(rankWeight(83), 0);
 });
 
-test('§53 retrieval score: one result supporting two associations splits its weight', () => {
+test('§53 retrieval score: a result carrying two associations gives each its full weight', () => {
   const out = googleRetrievalScores([
     { rank: 1, associationIds: [1, 2] },
     { rank: 2, associationIds: [1] },
   ]);
-  assert.equal(out.scores[1].weight, 0.5 + 0.9);
-  assert.equal(out.scores[2].weight, 0.5);
-  assert.ok(Math.abs(out.scores[1].grs + out.scores[2].grs - 100) < 0.1, 'shares must sum to 100');
+  assert.equal(out.scores[1].weight, 1.9, '§53: sum the result weights');
+  assert.equal(out.scores[2].weight, 1, 'not divided by the number of associations on the result');
+  assert.equal(out.scores[1].grs, 100, 'every first-page result carries association 1');
+  assert.equal(out.scores[2].grs, 52.6);
+});
+
+/**
+ * Regression, from a live page: an association carried by two first-page
+ * results, each also carrying many others, scored 2.7 when weight was divided
+ * per result. Measured positions and link counts; the figure §53 gives is the
+ * sum of those two results' weights over the page.
+ */
+test('§53 retrieval score: an association on crowded first-page results is not diluted to nothing', () => {
+  const others = (n, from) => Array.from({ length: n }, (_, i) => from + i);
+  const out = googleRetrievalScores([
+    { rank: 2, associationIds: others(13, 100) },
+    { rank: 3, associationIds: others(11, 200) },
+    { rank: 6, associationIds: others(9, 300) },
+    { rank: 7, associationIds: [99, ...others(14, 400)] },
+    { rank: 8, associationIds: [99, ...others(4, 500)] },
+    { rank: 9, associationIds: others(5, 600) },
+    { rank: 10, associationIds: others(7, 700) },
+  ]);
+  assert.equal(out.scores[99].grs, 21.9, 'ranks 7 and 8 together are 0.7 of a 3.2 page');
 });
 
 test('§53 retrieval score: unclassified results are reported, not silently ignored', () => {
@@ -265,7 +286,7 @@ test('§53 retrieval score: unclassified results are reported, not silently igno
   ]);
   assert.equal(out.classified_weight, 1);
   assert.ok(out.unclassified_share > 0.4, 'the unexplained share of the page must surface');
-  assert.equal(out.scores[1].grs, 100, 'GRS is a share of what we could classify');
+  assert.equal(out.scores[1].grs, 52.6, 'a result we could not connect to anything does not carry the association');
 });
 
 // --- §43 Sentiment ----------------------------------------------------------

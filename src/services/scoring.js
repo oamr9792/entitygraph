@@ -403,13 +403,24 @@ export function rankWeight(rank, overrides) {
 }
 
 /**
- * §52/§53 — weighted share of the entity's first page that supports each
- * association. `results` is [{ rank, associationIds: [] }].
+ * §52/§53 — how much of the entity's first page carries each association.
+ * `results` is [{ rank, associationIds: [] }].
  *
- * The denominator is the weight of results we could classify, not of all
- * results: dividing by the whole page would silently report "philanthropy is
- * 4% of the SERP" when the truth is "philanthropy is 4% of the part of the
- * SERP we understood". The unclassified mass is returned so the UI can say so.
+ * Each association receives the full weight of every result that carries it,
+ * as §53 specifies ("for each association, sum its result weights"), expressed
+ * as a share of the page's total rank weight. GRS therefore answers "what
+ * fraction of Google's first page, by position, carries this association", and
+ * the scores do not sum to 100: a result about a lawyer and his former client
+ * carries both, fully.
+ *
+ * An earlier version divided each result's weight among the associations it
+ * carried. First-page results carry around nine each, so an association on 13
+ * of 67 results — two of them in the top ten — scored 2.7, beside a Google panel
+ * showing it plainly. The division was not in the brief.
+ *
+ * Unclassified results stay in the denominator, since a result we could not
+ * connect to anything does not carry the association, and their share is
+ * returned so the UI can say how much of the page went unexplained.
  */
 export function googleRetrievalScores(results, overrides) {
   const weights = new Map();
@@ -420,20 +431,18 @@ export function googleRetrievalScores(results, overrides) {
     const w = rankWeight(r.rank, overrides);
     if (w <= 0) continue;
     totalWeight += w;
-    const ids = r.associationIds ?? [];
+    // A result linked to the same association twice still carries it once.
+    const ids = [...new Set(r.associationIds ?? [])];
     if (!ids.length) continue;
     classifiedWeight += w;
-    // A result supporting two associations splits its weight between them, so
-    // one URL cannot inflate the page's total mass.
-    const share = w / ids.length;
-    for (const id of ids) weights.set(id, (weights.get(id) ?? 0) + share);
+    for (const id of ids) weights.set(id, (weights.get(id) ?? 0) + w);
   }
 
   const scores = {};
   for (const [id, weight] of weights) {
     scores[id] = {
       weight: round(weight, 4),
-      grs: round(safeDiv(weight, classifiedWeight, 0) * 100, 1),
+      grs: round(safeDiv(weight, totalWeight, 0) * 100, 1),
     };
   }
   return {
