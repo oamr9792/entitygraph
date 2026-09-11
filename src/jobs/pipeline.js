@@ -146,14 +146,20 @@ const HANDLERS = {
         entityId,
         jobId: ctx.jobId,
       };
-      const { items } = await searchAcross(['google_serp'], aliases[0], { ...serpOptions, force: state.options.force });
+      // The canonical name, never aliases[0]. searchQueries orders user aliases
+      // ahead of the canonical name, so aliases[0] can be a rarely used form —
+      // "Jay P. Lefkowitz" — whose Google page differs from the one people see,
+      // and which pairs with a subject in 10 indexed documents where the name
+      // people actually use pairs with it in 750. The overlay captured later
+      // uses the canonical name too, so corpus and retrieval see the same page.
+      const { items } = await searchAcross(['google_serp'], state.entity.canonical_name, { ...serpOptions, force: state.options.force });
       serpItems.push(...items);
       collected.push(...items);
       // The same request, read back from the cache it was just written to: the
       // corpus-provider interface carries documents, and the rest of the page —
       // related searches, the knowledge panel — is needed as well.
       try {
-        googleSignals = (await dfs.serpOrganic(aliases[0], serpOptions)).signals ?? null;
+        googleSignals = (await dfs.serpOrganic(state.entity.canonical_name, serpOptions)).signals ?? null;
       } catch {
         googleSignals = null;
       }
@@ -186,7 +192,7 @@ const HANDLERS = {
       const allowance = isExplicit(term) ? perExplicit : perAuto;
       const room = Math.min(allowance, state.options.probeLimit ?? allowance, maxDocuments - collected.length);
       if (room <= 0) { stopReason = 'max_documents'; break; }
-      const { items } = await searchAcross(['dataforseo'], `"${aliases[0]}"`, {
+      const { items } = await searchAcross(['dataforseo'], `"${state.entity.canonical_name}"`, {
         maxDocuments: room,
         pageSize: Math.min(100, room),
         filters: dfs.pairedFilter(term),
