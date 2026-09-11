@@ -394,7 +394,11 @@ export async function canonicaliseAssociations(entityId, { entityJobId = null, c
     }
   }
 
-  return { merged, suggested, compared: pairs.length, embedding_model: embeddingModelName() };
+  // `retired` belongs on both return paths. The early one carried it and this
+  // one did not, so any caller reading it got undefined whenever the function
+  // did its normal work — the shape of a result should not depend on which
+  // branch produced it.
+  return { merged, suggested, retired, compared: pairs.length, embedding_model: embeddingModelName() };
 }
 
 // --- Hierarchy (§20) --------------------------------------------------------
