@@ -127,3 +127,23 @@ export function probeTermsFromSignals(signals, names = [], { limit = 8 } = {}) {
   }
   return out;
 }
+
+/**
+ * How the probe share of the document budget is divided.
+ *
+ * Analyst probes are the subjects someone came to investigate; related-search
+ * probes are discovery. An even split let four related searches quietly cut a
+ * named controversy to a fifth of its documents. So the analyst's terms share
+ * most of the budget and the automatic ones split the rest. With no automatic
+ * probes the analyst's terms take all of it, and the reverse.
+ */
+export function allocateProbeBudget({ maxDocuments, probeShare = 0.4, explicitCount = 0, autoCount = 0, explicitWeight = 0.75 }) {
+  const budget = Math.max(0, Math.floor(maxDocuments * probeShare));
+  const explicitPool = autoCount ? budget * explicitWeight : budget;
+  const autoPool = explicitCount ? budget * (1 - explicitWeight) : budget;
+  return {
+    budget,
+    perExplicit: explicitCount ? Math.max(20, Math.floor(explicitPool / explicitCount)) : 0,
+    perAuto: autoCount ? Math.max(10, Math.floor(autoPool / autoCount)) : 0,
+  };
+}

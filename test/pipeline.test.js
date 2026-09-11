@@ -607,3 +607,12 @@ test('columns added after the first deploy reach an existing database', async ()
   assert.ok(cols('entities').includes('probe_terms'));
   assert.ok(cols('serp_snapshots').includes('signals'));
 });
+
+test('analyst probes get most of the probe budget; related-search probes split the rest', async () => {
+  const { allocateProbeBudget } = await import('../src/providers/serp-signals.js');
+  assert.deepEqual(allocateProbeBudget({ maxDocuments: 200, explicitCount: 1, autoCount: 3 }), { budget: 80, perExplicit: 60, perAuto: 10 });
+  assert.deepEqual(allocateProbeBudget({ maxDocuments: 200, explicitCount: 1, autoCount: 0 }), { budget: 80, perExplicit: 80, perAuto: 0 });
+  assert.deepEqual(allocateProbeBudget({ maxDocuments: 200, explicitCount: 0, autoCount: 4 }), { budget: 80, perExplicit: 0, perAuto: 20 });
+  const large = allocateProbeBudget({ maxDocuments: 4000, explicitCount: 1, autoCount: 3 });
+  assert.ok(large.perExplicit > large.perAuto * 3, 'a named subject is never crowded out by discovery probes');
+});

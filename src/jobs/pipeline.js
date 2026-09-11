@@ -7,7 +7,7 @@ import * as dfs from '../providers/dataforseo.js';
 import { ingestCandidates, recordVersion } from '../services/ingest.js';
 import { fetchPageText, storeBody, mapPool } from '../services/fetch.js';
 import { withSerpPrior, serpRankFromRef } from '../services/disambiguation.js';
-import { probeTermsFromSignals } from '../providers/serp-signals.js';
+import { probeTermsFromSignals, allocateProbeBudget } from '../providers/serp-signals.js';
 import { scoreDocument, adjudicate, saveMatch } from '../services/disambiguation.js';
 import { buildWindows, extractFromWindow } from '../services/extraction.js';
 import { upsertAssociation, recordSurfaceForm, canonicaliseAssociations, applyDefaultHierarchy } from '../services/canonicalize.js';
@@ -169,13 +169,22 @@ const HANDLERS = {
     for (const term of [...explicitProbes, ...autoProbes]) {
       if (!probes.some((p) => p.toLowerCase() === String(term).toLowerCase())) probes.push(String(term));
     }
-    const probeBudget = Math.floor(maxDocuments * (state.options.probeShare ?? 0.4));
-    const perProbe = probes.length ? Math.max(20, Math.floor(probeBudget / probes.length)) : 0;
+    // The subjects an analyst named get most of the probe budget; related-search
+    // probes are discovery and split the remainder (see allocateProbeBudget).
+    const isExplicit = (term) => explicitProbes.some((p) => String(p).toLowerCase() === term.toLowerCase());
+    const explicitCount = probes.filter(isExplicit).length;
+    const { perExplicit, perAuto } = allocateProbeBudget({
+      maxDocuments,
+      probeShare: state.options.probeShare ?? 0.4,
+      explicitCount,
+      autoCount: probes.length - explicitCount,
+    });
     const probeItems = [];
     const probeReport = [];
     for (const term of probes) {
       if (ctx.shouldStop?.()) break;
-      const room = Math.min(perProbe, state.options.probeLimit ?? perProbe, maxDocuments - collected.length);
+      const allowance = isExplicit(term) ? perExplicit : perAuto;
+      const room = Math.min(allowance, state.options.probeLimit ?? allowance, maxDocuments - collected.length);
       if (room <= 0) { stopReason = 'max_documents'; break; }
       const { items } = await searchAcross(['dataforseo'], `"${aliases[0]}"`, {
         maxDocuments: room,
@@ -187,11 +196,7 @@ const HANDLERS = {
       });
       probeItems.push(...items);
       collected.push(...items);
-      probeReport.push({
-        term,
-        source: explicitProbes.some((p) => String(p).toLowerCase() === term.toLowerCase()) ? 'analyst' : 'google_related',
-        returned: items.length,
-      });
+      probeReport.push({ term, source: isExplicit(term) ? 'analyst' : 'google_related', returned: items.length });
     }
     const serpAdded = serpItems.length;
 
