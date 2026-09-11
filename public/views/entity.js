@@ -1,4 +1,4 @@
-import { h, api, fmt, sortableTable, disclaimer, navigate, sentimentClass, buildStatus } from '../app.js';
+import { h, api, fmt, sortableTable, disclaimer, navigate, sentimentClass, buildStatus, clear } from '../app.js';
 
 /** §49 — the global time control, shared by every screen that takes a window. */
 export function timeControl(query, { extra = null } = {}) {
@@ -40,6 +40,83 @@ export function timeControl(query, { extra = null } = {}) {
 
 const arrow = (m) => h('span', { class: `trend ${m.bucket}`, title: `${m.label} (${fmt.change(m.basis)})` }, m.arrow);
 
+/**
+ * Shown in place of the dashboard when there is nothing to draw.
+ *
+ * The failure mode this exists for: a build runs all twelve steps, retrieves
+ * a corpus, rejects every document as the wrong person, and reports success.
+ * The money is spent, the screen is blank, and nothing anywhere says why.
+ */
+function diagnosisPanel(entityId) {
+  const body = h('div', { class: 'panel-body' }, h('div', { class: 'dim small' }, 'Checking what the last build did…'));
+  const panel = h('div', { class: 'panel' }, h('h2', {}, 'Nothing to show — here is why'), body);
+
+  const REMEDIES = {
+    identity: ['Identity profile', `#/entities/${entityId}/identity`],
+    review: ['Review queue', `#/entities/${entityId}/review`],
+    settings: ['Settings & model', '#/settings'],
+  };
+
+  api(`/api/entities/${entityId}/diagnosis`)
+    .then((d) => {
+      clear(body);
+      body.append(h('p', { class: 'diagnosis-headline' }, d.headline));
+      if (d.detail) body.append(h('p', { class: 'diagnosis-detail' }, d.detail));
+
+      // The counts matter here: "244 retrieved, 0 accepted" is a different
+      // problem from "0 retrieved", and the numbers distinguish them faster
+      // than any prose can.
+      if (d.counts) {
+        body.append(h('div', { class: 'diagnosis-counts' },
+          [
+            ['documents retrieved', d.counts.documents],
+            ['accepted as this entity', d.counts.accepted],
+            ['awaiting review', d.counts.review],
+            ['rejected as someone else', d.counts.rejected],
+            ['evidence rows', d.counts.evidence],
+            ['active associations', d.counts.associations],
+          ].map(([label, value]) =>
+            h('div', { class: `count ${value ? '' : 'zero'}` },
+              h('span', { class: 'n' }, fmt.n(value)),
+              h('span', { class: 'l' }, label))
+          )
+        ));
+      }
+
+      if (d.spend?.calls) {
+        body.append(h('p', { class: 'small dim' },
+          `${fmt.n(d.spend.calls)} provider calls, $${(d.spend.usd ?? 0).toFixed(4)} spent on this entity` +
+          (d.spend.failures ? `, ${d.spend.failures} failed` : '')));
+      }
+
+      const actions = h('div', { class: 'toolbar' });
+      if (d.remedy && REMEDIES[d.remedy]) {
+        const [label, href] = REMEDIES[d.remedy];
+        actions.append(h('button', { class: 'primary', onclick: () => navigate(href) }, label));
+      }
+      actions.append(h('button', { onclick: () => navigate(`#/entities/${entityId}/jobs`) }, 'Jobs & cost'));
+      body.append(actions);
+
+      if (d.steps?.length) {
+        body.append(h('details', { class: 'diagnosis-steps' },
+          h('summary', {}, 'What each step reported'),
+          h('div', { class: 'progress' }, d.steps.map((s) =>
+            h('div', { class: `step ${s.status}` },
+              h('span', { class: 'mark' }, s.status === 'done' ? '✓' : s.status === 'skipped' ? '–' : '…'),
+              h('span', { style: { minWidth: '14rem' } }, s.step.replace(/_/g, ' ')),
+              h('span', { class: 'detail' }, s.detail ?? '')
+            )
+          ))
+        ));
+      }
+    })
+    .catch((err) => {
+      clear(body).append(h('div', { class: 'empty' }, `Could not read the build log: ${err.message}`));
+    });
+
+  return panel;
+}
+
 /** §44/§45 — the dashboard. */
 export async function dashboardView({ params, query }) {
   const search = new URLSearchParams();
@@ -49,16 +126,14 @@ export async function dashboardView({ params, query }) {
   const { state, leaderboard: board, coverage, narrative, alerts } = data;
 
   if (!board?.associations?.length) {
-    // The status strip carries the reason: a build in progress, or the error
-    // that stopped one. An empty dashboard with no explanation is the thing
-    // that makes a failed build look like a slow one.
+    // An empty dashboard is the moment someone most needs an explanation and
+    // is least likely to get one — a build can complete every step, spend the
+    // corpus budget, and produce nothing. The diagnosis panel reads what the
+    // last job actually reported and says where the pipeline ran dry.
     return h('div', {},
       h('div', { class: 'page-head' }, h('div', {}, h('h1', {}, board?.entity?.canonical_name ?? 'Entity'))),
       buildStatus(params.id),
-      h('div', { class: 'panel' }, h('div', { class: 'empty' },
-        h('p', {}, 'No associations yet. If no build is running above, start one — or open the job log to see what the last one did.'),
-        h('button', { onclick: () => navigate(`#/entities/${params.id}/jobs`) }, 'Jobs & cost')
-      ))
+      diagnosisPanel(params.id)
     );
   }
 

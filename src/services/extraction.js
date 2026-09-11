@@ -139,17 +139,29 @@ export async function extractFromWindow(profile, window, { entityId = null, jobI
   const llm = getLlm();
   if (!llm) return heuristicExtract(profile, window);
 
-  const res = await llmJson(
-    {
-      system: SYSTEM_PROMPT(profile),
-      user: `PASSAGE:\n${window.text}`,
-      schema: EXTRACTION_SCHEMA,
-      schemaName: 'entity_associations',
-      schemaDescription: 'Associations the passage draws between the target entity and other entities or concepts.',
-      maxTokens: 4000,
-    },
-    { entityId, jobId, endpoint: 'extraction' }
-  );
+  let res;
+  try {
+    res = await llmJson(
+      {
+        system: SYSTEM_PROMPT(profile),
+        user: `PASSAGE:\n${window.text}`,
+        schema: EXTRACTION_SCHEMA,
+        schemaName: 'entity_associations',
+        schemaDescription: 'Associations the passage draws between the target entity and other entities or concepts.',
+        maxTokens: 4000,
+      },
+      { entityId, jobId, endpoint: 'extraction' }
+    );
+  } catch (err) {
+    // A budget or quota stop must halt the whole run — falling back to the
+    // heuristic there would quietly finish the build at the wrong quality.
+    if (err.status === 429) throw err;
+    // Anything else: degrade rather than drop the document. A rejected API key
+    // used to lose every passage silently, which produced an empty dashboard
+    // from a corpus the client had already paid for. Lower-quality evidence,
+    // clearly labelled as such, beats no evidence and no explanation.
+    return heuristicExtract(profile, window);
+  }
   if (!res) return heuristicExtract(profile, window);
 
   const data = res.data ?? {};

@@ -350,3 +350,42 @@ test('§16 a label that is really a sentence is rejected, not stored as an entit
     'a sentence must not create an association'
   );
 });
+
+/**
+ * Regression: a rejected API key used to produce an empty dashboard from a
+ * corpus that had already been paid for.
+ *
+ * `available()` can only see that a key was configured, not that the provider
+ * accepts it. With a bad key every call failed, the heuristic fallback never
+ * engaged because the provider still looked available, extraction returned
+ * nothing for every passage, and the job reported success. Observed in
+ * production as 104 calls, 104 failures, $0.00, and a blank screen.
+ */
+test('a failing LLM provider trips a breaker and falls back rather than failing silently', async () => {
+  const llm = await import('../src/providers/llm/index.js');
+
+  llm.resetLlmBreaker();
+  const healthy = llm.llmStatus();
+  assert.equal(healthy.degraded, false);
+  assert.equal(healthy.consecutive_failures, 0);
+
+  for (let i = 0; i < 5; i += 1) llm.noteLlmFailure('anthropic error 401: invalid x-api-key');
+
+  // Asserted on breaker_open rather than , because the test
+  // environment deliberately configures no LLM provider — and the breaker's
+  // own state is the thing under test, not the interaction with config.
+  const degraded = llm.llmStatus();
+  assert.equal(degraded.breaker_open, true, 'five consecutive failures must trip the breaker');
+  assert.equal(degraded.available, false, 'a provider that cannot answer is not available');
+  assert.equal(degraded.fallback, 'heuristic');
+  assert.equal(degraded.consecutive_failures, 5);
+  assert.match(degraded.last_error, /invalid x-api-key/);
+  assert.equal(llm.getLlm(), null, 'work must route to the fallback while the breaker is open');
+
+  // One success clears it, so a transient outage does not disable the provider
+  // for the rest of the process.
+  llm.noteLlmSuccess();
+  assert.equal(llm.llmStatus().breaker_open, false);
+  assert.equal(llm.llmStatus().consecutive_failures, 0);
+  assert.equal(llm.llmStatus().last_error, null);
+});

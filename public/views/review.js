@@ -247,6 +247,26 @@ export async function jobsView({ params }) {
           )
         )
       : null,
+    // A failure count in the usage table tells you something went wrong and
+    // nothing about what. The provider's own error message is the one thing
+    // that turns "104 failures" into an action, so it goes on the screen
+    // rather than staying in a column nobody can read.
+    usage.recent_failures?.length
+      ? h('div', { class: 'panel' },
+          h('h2', {}, 'Recent provider failures',
+            h('span', { class: 'chip bad' }, String(usage.recent_failures.length))),
+          h('div', { class: 'panel-body' },
+            h('p', { class: 'small dim', style: { marginTop: 0 } },
+              'What the provider actually said. A run where every call to one provider fails usually means a key that is missing, mistyped or revoked — the corpus is still charged for, so it is worth fixing before rebuilding.'),
+            h('table', {}, h('tbody', {}, usage.recent_failures.map((f) => h('tr', {},
+              h('td', { class: 'small dim', style: { whiteSpace: 'nowrap' } }, fmt.date(f.created_at)),
+              h('td', {}, h('span', { class: 'chip' }, f.provider)),
+              h('td', { class: 'small mono dim' }, f.endpoint),
+              h('td', { class: 'small sentiment negative' }, f.detail ?? '(no detail recorded)')
+            ))))
+          )
+        )
+      : null,
     jobs.jobs.length ? jobPanels : h('div', { class: 'panel' }, h('div', { class: 'empty' }, 'No jobs yet.'))
   );
 }

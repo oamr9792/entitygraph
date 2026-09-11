@@ -5,6 +5,7 @@ import { mergeAssociations, splitAssociation } from '../services/canonicalize.js
 import { setManualVerdict } from '../services/disambiguation.js';
 import { clusterMembers } from '../services/duplicates.js';
 import { relatedAssociations, disjointAssociations } from '../services/related.js';
+import { diagnoseEmptyEntity } from '../services/diagnosis.js';
 import { llmStatus } from '../providers/llm/index.js';
 import { listProviders } from '../providers/corpus/index.js';
 import '../providers/corpus/providers.js';
@@ -12,6 +13,17 @@ import * as dfs from '../providers/dataforseo.js';
 import config, { SCORE_DISCLAIMER, MODEL } from '../config.js';
 
 export const evidenceRoutes = new Router();
+
+/**
+ * Why an entity's dashboard is empty. Asked by the dashboard itself when it
+ * has nothing to draw, so "the build completed and there is nothing here" is
+ * never left as a puzzle for the person who paid for it.
+ */
+evidenceRoutes.get('/api/entities/:id/diagnosis', (req, res, params) => {
+  const result = diagnoseEmptyEntity(Number(params.id));
+  if (!result) throw notFound('entity not found');
+  ok(res, result);
+});
 
 /**
  * §17 — what this association travels with, and what carries it.

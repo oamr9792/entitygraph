@@ -392,3 +392,28 @@ a.chip:hover { border-color: var(--accent-dim); color: var(--accent); }
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+/* --- Empty-dashboard diagnosis --------------------------------------------- */
+.diagnosis-headline { margin: 0 0 0.5rem; font-size: 1rem; color: var(--text); }
+.diagnosis-detail { margin: 0 0 1rem; color: var(--muted); font-size: 0.88rem; line-height: 1.6; }
+.diagnosis-counts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-bottom: 1rem;
+}
+.diagnosis-counts .count {
+  flex: 1 1 8rem;
+  background: var(--panel-2);
+  border: 1px solid var(--line-soft);
+  border-radius: 5px;
+  padding: 0.5rem 0.6rem;
+}
+/* A zero in the middle of this row is the answer, so it is marked rather than
+   left for the reader to spot among five other numbers. */
+.diagnosis-counts .count.zero { border-color: #6b3330; }
+.diagnosis-counts .count.zero .n { color: var(--bad); }
+.diagnosis-counts .n { display: block; font-family: var(--mono); font-size: 1.1rem; color: var(--text); }
+.diagnosis-counts .l { display: block; font-size: 0.72rem; color: var(--dim); margin-top: 0.15rem; }
+.diagnosis-steps { margin-top: 1rem; }
+.diagnosis-steps summary { cursor: pointer; font-size: 0.82rem; color: var(--muted); }
