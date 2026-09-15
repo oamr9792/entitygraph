@@ -399,8 +399,14 @@ export function checkDraft(
   const issues = [];
   const text = `${title ?? ''}\n${body ?? ''}`;
 
+  // An association the analyst chose to strengthen is not something to keep
+  // out, even when it travels with the displaced one: the choice wins over the
+  // warning. The displaced association itself is never waved through.
+  const targetKeys = new Set(targets.flatMap((t) => [t.label, ...(t.terms ?? [])]).map((x) => normaliseForMatch(x)));
+
   if (mode === 'grow') {
     for (const entry of avoid) {
+      if (entry.severity !== 'block' && targetKeys.has(normaliseForMatch(entry.term))) continue;
       const hits = findOccurrences(text, [entry.term]).length;
       if (!hits) continue;
       issues.push({
@@ -449,6 +455,7 @@ export function checkDraft(
         kind: 'verbatim',
         severity: 'block',
         fact_id: overlap.fact_id,
+        excerpt: overlap.excerpt,
         text: `Copies a run of words from ${overlap.fact_id}: “${overlap.excerpt}…”. Rewrite it in your own words, or quote it with attribution.`,
       });
     }
@@ -491,13 +498,14 @@ export function checkDraft(
   const coverage = mode === 'grow' ? targetCoverage({ title, body }, targets, { names, cap }) : [];
   for (const t of coverage) {
     if (!t.mentions) {
-      issues.push({ kind: 'target_missing', severity: 'block', text: `Never mentions ${t.label}, which this piece exists to strengthen.` });
+      issues.push({ kind: 'target_missing', severity: 'block', label: t.label, text: `Never mentions ${t.label}, which this piece exists to strengthen.` });
       continue;
     }
     if (!t.beside_name) {
       issues.push({
         kind: 'target_not_beside_name',
         severity: 'warn',
+        label: t.label,
         text: `${t.label} never appears in a sentence with the client’s name. Same-sentence mentions count for far more than distant ones.`,
       });
     }
@@ -505,6 +513,7 @@ export function checkDraft(
       issues.push({
         kind: 'target_not_leading',
         severity: 'warn',
+        label: t.label,
         text: `${t.label}, the main association, is not in the title or the opening paragraph.`,
       });
     }
@@ -512,6 +521,7 @@ export function checkDraft(
       issues.push({
         kind: 'target_repeated',
         severity: 'warn',
+        label: t.label,
         text: `Mentions ${t.label} ${t.mentions} times. Only the first ${cap} count, and repetition reads as spam.`,
       });
     }
@@ -526,6 +536,30 @@ export function checkDraft(
     targets: coverage,
     checked_at: new Date().toISOString(),
   };
+}
+
+/**
+ * The issues an AI revision is asked to resolve: the ones the person chose, from
+ * the list they were looking at. Returns { issues } or { error, status }.
+ *
+ * `checkedAt` pins the request to that list. Issues are addressed by position,
+ * so if the draft was re-checked in the meantime the positions may point at
+ * different issues, and fixing the wrong one silently is worse than asking.
+ */
+export function pickIssues(checks, { indices = null, allBlocking = false, checkedAt = null } = {}) {
+  const issues = checks?.issues ?? [];
+  if (!issues.length) return { error: 'There are no issues to fix.', status: 400 };
+  if (checkedAt && checks.checked_at !== checkedAt) {
+    return { error: 'The draft has been re-checked since this list was shown. Reload it and try again.', status: 409 };
+  }
+  if (allBlocking) {
+    const blocking = issues.filter((i) => i.severity === 'block');
+    return blocking.length ? { issues: blocking } : { error: 'Nothing is blocking approval.', status: 400 };
+  }
+  const picked = [...new Set((indices ?? []).map(Number))]
+    .filter((n) => Number.isInteger(n) && n >= 0 && n < issues.length)
+    .map((n) => issues[n]);
+  return picked.length ? { issues: picked } : { error: 'Choose an issue to fix.', status: 400 };
 }
 
 /** The structure a writer works to, with or without a generated draft. */

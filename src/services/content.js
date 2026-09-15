@@ -6,13 +6,14 @@ import { relatedAssociations } from './related.js';
 import { identityProfile } from './identity.js';
 import { llmJson, llmStatus } from '../providers/llm/index.js';
 import { assertWithinBudget } from '../providers/http-client.js';
-import { badRequest, notFound } from '../http.js';
-import { findOccurrences, normaliseWhitespace } from '../util/text.js';
+import { HttpError, badRequest, notFound } from '../http.js';
+import { findOccurrences, normaliseForMatch, normaliseWhitespace } from '../util/text.js';
 import { round } from '../util/stats.js';
 import { surnameAnchor } from './serp-coverage.js';
 import { getSource, listSources, sourceFacts, sourceSummary } from './content-source.js';
 import {
   FORMATS, FORMAT_ORDER, SOURCE_RELATIONS, strategyFor, strengthenStrategy, avoidTermsFor, usableAliases, checkDraft, outlineFor,
+  pickIssues,
 } from './content-checks.js';
 
 /**
@@ -146,6 +147,11 @@ export function contentBrief(associationId, { format = null, growIds = null, sou
     });
   }
 
+  const targets = mode === 'grow' ? targetsFor(selected, profile, blockTerms) : [];
+  // Something the analyst ticked to strengthen is not also a term to keep out.
+  const targetKeys = new Set(targets.flatMap((t) => [t.label, ...t.terms]).map((x) => normaliseForMatch(x)));
+  const avoidShown = avoid.filter((a) => a.severity === 'block' || !targetKeys.has(normaliseForMatch(a.term)));
+
   return {
     disclaimer: SCORE_DISCLAIMER,
     purpose: chosenPurpose,
@@ -162,7 +168,7 @@ export function contentBrief(associationId, { format = null, growIds = null, sou
     names,
     candidates,
     selected_ids: selected.map((s) => s.association_id),
-    targets: mode === 'grow' ? targetsFor(selected, profile, blockTerms) : [],
+    targets,
     optimisation: mode === 'grow' ? optimisationRules() : [],
     mention_cap: MODEL.mentionCap.length,
     target_documents: targetDocuments,
@@ -172,7 +178,7 @@ export function contentBrief(associationId, { format = null, growIds = null, sou
     relations: Object.entries(SOURCE_RELATIONS).map(([key, r]) => ({ key, ...r })),
     recent_sources: FORMATS[chosen].requiresSource ? listSources(entityId) : [],
     facts,
-    avoid,
+    avoid: avoidShown,
     outline: outlineFor(chosen, { entityName: profile.canonical_name, grow: selected, relation: sourceRelation ?? 'about' }),
     placement: placementFor(entityId, plan, chosen),
     llm: (({ available, model }) => ({ available, model }))(llmStatus()),
@@ -627,7 +633,7 @@ export async function generateInto(id) {
     assertWithinBudget(row.entity_id, { maxApiCostUsd: entity?.max_api_cost_usd ?? null });
     const result = await llmJson(
       {
-        system: brief.mode === 'correct' ? CORRECT_SYSTEM : brief.format === 'source_analysis' ? ANALYSIS_SYSTEM : GROW_SYSTEM,
+        system: systemFor(brief),
         user: promptFor(brief, inputs.notes),
         schema: DRAFT_SCHEMA,
         schemaName: 'content_draft',
@@ -638,10 +644,7 @@ export async function generateInto(id) {
       { entityId: row.entity_id, endpoint: 'content' }
     );
     const data = result?.data ?? {};
-    const claims = (data.claims ?? []).map((c) => ({
-      sentence: normaliseWhitespace(c.sentence),
-      fact_ids: (c.fact_ids ?? []).map((x) => String(x).trim()).filter(Boolean),
-    }));
+    const claims = normaliseClaims(data.claims);
     const checks = checkDraft({ title: data.title, body: data.body, claims }, checkOptions(brief, inputs.notes));
     run(
       `UPDATE content_drafts
@@ -761,6 +764,141 @@ export function updateDraft(id, patch = {}, user = null) {
     status,
     approvedBy,
     publishedUrl,
+    id
+  );
+  return getDraft(id);
+}
+
+// --- AI revision of flagged issues -------------------------------------------
+
+const systemFor = (brief) =>
+  brief.mode === 'correct' ? CORRECT_SYSTEM : brief.format === 'source_analysis' ? ANALYSIS_SYSTEM : GROW_SYSTEM;
+
+const normaliseClaims = (claims) =>
+  (claims ?? []).map((c) => ({
+    sentence: normaliseWhitespace(c.sentence),
+    fact_ids: (c.fact_ids ?? []).map((x) => String(x).trim()).filter(Boolean),
+  }));
+
+const FIX_PREAMBLE = `You revise an existing draft to resolve specific review issues. A person reviews the result.
+
+How to revise:
+- Change as little as possible. Rewrite only the sentences an issue concerns, and keep the headline, structure, order and everything else as it is unless an issue requires otherwise.
+- An issue marked [fix] must be resolved. An issue marked [check] is a warning: decide whether a change is warranted, make it only if it is, and say which you did.
+- Copied words: tell that passage in your own words, or quote a short part of it word for word with attribution. Never leave a run of the source's words unquoted.
+- A repeated association: keep the first two or three direct mentions and replace later ones with a pronoun or a natural rewording — never with a different association.
+- A missing or buried association: add or move one direct sentence that names the client, supported by the facts.
+- Resolving one issue must not create another. Every rule below still applies in full.
+- Return the complete revised title and body, and the complete claims list for the revised body (every factual sentence, with the ids of the facts that support it). Say whether you changed anything, and explain in one or two sentences what you changed or why no change was needed.
+
+The draft's original rules follow.`;
+
+const FIX_SCHEMA = {
+  type: 'object',
+  properties: {
+    title: { type: 'string' },
+    body: { type: 'string', description: 'The complete revised draft, in Markdown.' },
+    claims: DRAFT_SCHEMA.properties.claims,
+    changed: { type: 'boolean', description: 'Whether the title or body was changed.' },
+    explanation: { type: 'string', description: 'One or two sentences: what changed, or why nothing needed to.' },
+  },
+};
+
+const checkCounts = (checks) => ({ blocking: checks?.blocking ?? 0, warnings: checks?.warnings ?? 0 });
+
+/**
+ * Asks the LLM to resolve chosen issues in a saved draft, then checks the result
+ * again. The text it replaces is kept, so one revision can be undone.
+ */
+export async function fixDraft(id, { issues: indices = null, all_blocking: allBlocking = false, checked_at: checkedAt = null } = {}) {
+  const current = getDraft(id).draft;
+  if (!current.body) throw badRequest('There is no draft text to revise yet.');
+  const picked = pickIssues(current.checks, { indices, allBlocking, checkedAt });
+  if (picked.error) throw new HttpError(picked.error, picked.status);
+
+  const status = llmStatus();
+  if (!status.available) {
+    throw badRequest('No working LLM key, so the AI cannot revise the draft. Edit it by hand, or add a key in Settings.');
+  }
+  const entity = get(`SELECT max_api_cost_usd FROM entities WHERE id = ?`, current.entity_id);
+  assertWithinBudget(current.entity_id, { maxApiCostUsd: entity?.max_api_cost_usd ?? null });
+
+  const brief = current.brief;
+  const notes = current.inputs.notes;
+  const prompt = [
+    promptFor(brief, notes),
+    '',
+    'CURRENT TITLE:',
+    current.title ?? '',
+    '',
+    'CURRENT BODY:',
+    current.body,
+    '',
+    'CURRENT CLAIMS:',
+    JSON.stringify(current.claims ?? []),
+    '',
+    'ISSUES TO RESOLVE:',
+    ...picked.issues.map((i) => `- [${i.severity === 'block' ? 'fix' : 'check'}] ${i.text}`),
+  ].join('\n');
+
+  const result = await llmJson(
+    {
+      system: `${FIX_PREAMBLE}\n\n${systemFor(brief)}`,
+      user: prompt,
+      schema: FIX_SCHEMA,
+      schemaName: 'content_revision',
+      schemaDescription: 'The draft revised to resolve the listed issues, with every factual sentence tied to its sources.',
+      maxTokens: 8000,
+      effort: 'medium',
+    },
+    { entityId: current.entity_id, endpoint: 'content_fix' }
+  );
+  const data = result?.data ?? {};
+  const explanation = normaliseWhitespace(data.explanation ?? '');
+  const body = String(data.body ?? '').trim();
+
+  if (!data.changed || !body || (body === current.body && normaliseWhitespace(data.title ?? '') === (current.title ?? ''))) {
+    run(
+      `UPDATE content_drafts SET revision_note = ?, cost_usd = cost_usd + ?, updated_at = datetime('now') WHERE id = ?`,
+      `No change needed: ${explanation || 'the AI left the draft as it was.'}`,
+      result?.cost ?? 0,
+      id
+    );
+    return { ...getDraft(id), fix: { changed: false, explanation, before: checkCounts(current.checks), after: checkCounts(current.checks) } };
+  }
+
+  const title = normaliseWhitespace(data.title ?? current.title ?? '');
+  const claims = normaliseClaims(data.claims);
+  const after = checkDraft({ title, body, claims }, checkOptions(brief, notes));
+  run(
+    `UPDATE content_drafts
+        SET previous_title = title, previous_body = body, previous_claims = claims, previous_checks = checks,
+            title = ?, body = ?, claims = ?, checks = ?, revision_note = ?,
+            status = 'draft', approved_by = NULL, cost_usd = cost_usd + ?, updated_at = datetime('now')
+      WHERE id = ?`,
+    title,
+    body,
+    JSON.stringify(claims),
+    JSON.stringify(after),
+    explanation || 'Revised by the AI.',
+    result?.cost ?? 0,
+    id
+  );
+  return { ...getDraft(id), fix: { changed: true, explanation, before: checkCounts(current.checks), after: checkCounts(after) } };
+}
+
+/** Restores the text an AI revision replaced. One level deep. */
+export function undoFix(id) {
+  const row = get(`SELECT previous_body FROM content_drafts WHERE id = ?`, id);
+  if (!row) throw notFound('draft not found');
+  if (!row.previous_body) throw badRequest('There is no AI revision to undo.');
+  run(
+    `UPDATE content_drafts
+        SET title = previous_title, body = previous_body, claims = COALESCE(previous_claims, '[]'), checks = previous_checks,
+            previous_title = NULL, previous_body = NULL, previous_claims = NULL, previous_checks = NULL,
+            revision_note = 'The last AI revision was undone.', status = 'draft', approved_by = NULL,
+            updated_at = datetime('now')
+      WHERE id = ?`,
     id
   );
   return getDraft(id);

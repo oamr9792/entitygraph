@@ -1,7 +1,7 @@
 import { Router, ok, readJson } from '../http.js';
 import { requireAuth, audit } from '../auth.js';
 import { getEntity } from '../services/identity.js';
-import { contentBrief, createDraft, generateInto, getDraft, listDrafts, updateDraft } from '../services/content.js';
+import { contentBrief, createDraft, generateInto, getDraft, listDrafts, updateDraft, fixDraft, undoFix } from '../services/content.js';
 import { readSource, listSources } from '../services/content-source.js';
 
 export const contentRoutes = new Router();
@@ -65,4 +65,24 @@ contentRoutes.post('/api/content/:id/generate', async (req, res, params) => {
   await generateInto(Number(params.id));
   audit(user.id, 'content.generate', { draft_id: Number(params.id) });
   ok(res, getDraft(Number(params.id)));
+});
+
+// An AI revision spends money and replaces text, so both are recorded.
+contentRoutes.post('/api/content/:id/fix', async (req, res, params) => {
+  const user = requireAuth(req);
+  const body = await readJson(req);
+  const result = await fixDraft(Number(params.id), body);
+  audit(user.id, 'content.fix', {
+    draft_id: Number(params.id),
+    issues: body.all_blocking ? 'all_blocking' : body.issues,
+    changed: result.fix.changed,
+  });
+  ok(res, result);
+});
+
+contentRoutes.post('/api/content/:id/undo', async (req, res, params) => {
+  const user = requireAuth(req);
+  const result = undoFix(Number(params.id));
+  audit(user.id, 'content.undo_fix', { draft_id: Number(params.id) });
+  ok(res, result);
 });

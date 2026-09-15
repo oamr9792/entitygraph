@@ -414,15 +414,69 @@ export async function draftView({ params }) {
   body.value = d.body ?? '';
 
   const checks = d.checks;
+
+  // The AI revises the saved text against the list shown here, so unsaved
+  // edits are saved first rather than silently overwritten.
+  const unsaved = () => title.value !== (d.title ?? '') || body.value !== (d.body ?? '');
+  const askAi = async (payload, button, busy) => {
+    if (unsaved()) {
+      toast('Save & re-check your edits first, so the AI works on the text you see.', 'error');
+      return;
+    }
+    const label = button.textContent;
+    button.disabled = true;
+    button.textContent = busy;
+    try {
+      const res = await api(`/api/content/${d.id}/fix`, {
+        method: 'POST',
+        body: { ...payload, checked_at: checks.checked_at },
+      });
+      toast(res.fix.changed
+        ? `Revised. ${res.fix.after.blocking} blocking left. ${res.fix.explanation}`
+        : `No change: ${res.fix.explanation}`, 'success');
+      navigate(location.hash);
+    } catch (err) {
+      toast(err.message, 'error');
+      button.disabled = false;
+      button.textContent = label;
+    }
+  };
+  const aiTitle = llm.available
+    ? 'Uses the LLM, charged to this client’s spend. You can undo the revision.'
+    : 'No working LLM key';
+  const issueButton = (issue, index) => {
+    const blocking = issue.severity === 'block';
+    const button = h('button', {
+      type: 'button',
+      class: 'small ghost ai-fix',
+      title: aiTitle,
+      disabled: llm.available ? null : 'disabled',
+    }, blocking ? 'Fix with AI' : 'Check with AI');
+    button.addEventListener('click', () => askAi({ issues: [index] }, button, blocking ? 'Fixing…' : 'Checking…'));
+    return button;
+  };
+  const fixAll = checks?.blocking
+    ? (() => {
+        const button = h('button', { type: 'button', class: 'small', title: aiTitle, disabled: llm.available ? null : 'disabled' },
+          `Fix all ${checks.blocking} with AI`);
+        button.addEventListener('click', () => askAi({ all_blocking: true }, button, 'Fixing…'));
+        return button;
+      })()
+    : null;
+
   const checksPanel = h('div', { class: 'panel' },
     h('h2', {}, 'Checks',
-      checks
-        ? h('span', { class: `chip ${checks.ok ? 'good' : 'bad'}` }, checks.ok ? 'nothing blocking' : `${checks.blocking} to fix`)
-        : h('span', { class: 'chip' }, 'no draft yet')),
+      h('span', { class: 'toolbar', style: { margin: 0 } },
+        fixAll,
+        checks
+          ? h('span', { class: `chip ${checks.ok ? 'good' : 'bad'}` }, checks.ok ? 'nothing blocking' : `${checks.blocking} to fix`)
+          : h('span', { class: 'chip' }, 'no draft yet'))),
     h('div', { class: 'panel-body' },
       checks?.issues?.length
-        ? h('ul', { class: 'issues' }, checks.issues.map((i) => h('li', { class: `issue ${i.severity}` },
-            h('span', { class: `chip ${i.severity === 'block' ? 'bad' : 'warn'}` }, i.severity === 'block' ? 'fix' : 'check'), ' ', i.text)))
+        ? h('ul', { class: 'issues' }, checks.issues.map((i, index) => h('li', { class: `issue ${i.severity}` },
+            h('span', { class: `chip ${i.severity === 'block' ? 'bad' : 'warn'}` }, i.severity === 'block' ? 'fix' : 'check'),
+            h('span', { class: 'issue-text' }, i.text),
+            issueButton(i, index))))
         : h('p', { class: 'small muted', style: { margin: 0 } },
             checks ? 'No problems found. A person still needs to read it against the facts before approving.' : 'Checks run once there is draft text.'),
       h('p', { class: 'small dim', style: { marginBottom: 0 } },
@@ -496,6 +550,25 @@ export async function draftView({ params }) {
       }, d.body ? 'Regenerate' : 'Generate draft')
     : null;
 
+  const undoButton = d.previous_body
+    ? h('button', {
+        type: 'button',
+        class: 'small',
+        onclick: async (e) => {
+          if (unsaved() && !confirm('Undo the AI revision and discard your unsaved edits?')) return;
+          e.target.disabled = true;
+          try {
+            await api(`/api/content/${d.id}/undo`, { method: 'POST', body: {} });
+            toast('AI revision undone', 'success');
+            navigate(location.hash);
+          } catch (err) {
+            toast(err.message, 'error');
+            e.target.disabled = false;
+          }
+        },
+      }, 'Undo AI revision')
+    : null;
+
   const factIds = new Set((d.facts ?? []).map((f) => f.id));
   const claimsPanel = d.claims?.length
     ? h('div', { class: 'panel' },
@@ -528,6 +601,9 @@ export async function draftView({ params }) {
       h('div', { class: 'weak' }, h('span', { class: 'weak-tag' }, 'Disclosure'), h('span', {}, DISCLAIMERS.content_disclosure)),
       d.generation_error
         ? h('div', { class: 'weak bad' }, h('span', { class: 'weak-tag' }, 'No draft'), h('span', {}, d.generation_error, ' ', generateButton))
+        : null,
+      d.revision_note
+        ? h('div', { class: 'weak' }, h('span', { class: 'weak-tag' }, 'AI revision'), h('span', {}, d.revision_note, ' ', undoButton))
         : null),
     checksPanel,
     targetsPanel,

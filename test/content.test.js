@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import {
   FORMATS, FORMAT_ORDER, strategyFor, strengthenStrategy, avoidTermsFor, usableAliases, checkDraft, targetCoverage,
   verbatimOverlaps, outlineFor, unverifiedQuotes, withoutQuotes, chunkPassages, SOURCE_RELATIONS, cleanPageTitle,
-  detectBylineClient, quotationStats,
+  detectBylineClient, quotationStats, pickIssues,
 } from '../src/services/content-checks.js';
 
 /**
@@ -258,4 +258,50 @@ test('the original article’s title and byline are read sensibly', () => {
   assert.equal(detectBylineClient({ text: 'Why school choice matters\nBy Jay Lefkowitz\nMarch 3, 2024\nThe case for choice.', names: clientNames }), true);
   assert.equal(detectBylineClient({ text: 'The firm, represented by Jay Lefkowitz, won the appeal.', names: clientNames }), false);
   assert.equal(detectBylineClient({ text: 'By Jane Doe\nJay Lefkowitz spoke at the event.', names: clientNames }), false);
+});
+
+// --- AI revisions ------------------------------------------------------------
+
+test('an association chosen to strengthen is not flagged for travelling with the displaced one', () => {
+  const carrier = [{ term: 'Wells Fargo Advisors', reason: 'it travels with the displaced association, so naming it tends to bring that back', severity: 'warn' }];
+  const body = 'Solomon Tobal is a financial advisor with Wells Fargo Advisors.';
+  assert.ok(checkDraft({ body, claims: [] }, { avoid: carrier, facts }).issues.some((i) => i.kind === 'avoid_term'));
+
+  const chosen = checkDraft({ body, claims: [] }, {
+    avoid: carrier, facts, targets: [{ association_id: 9, label: 'Wells Fargo Advisors', terms: [] }], names: ['Solomon Tobal'],
+  });
+  assert.ok(!chosen.issues.some((i) => i.kind === 'avoid_term'), 'the analyst’s choice wins over the warning');
+
+  const displaced = checkDraft({ body: 'Jay Lefkowitz and Epstein.', claims: [] }, {
+    avoid, facts, targets: [{ association_id: 1, label: 'Epstein', terms: [] }], names,
+  });
+  assert.ok(displaced.issues.some((i) => i.kind === 'avoid_term'), 'the displaced association is never waved through');
+});
+
+test('issues carry what an AI revision needs to find the problem', () => {
+  const copied = 'Lefkowitz is a partner at Kirkland and Ellis where he leads the firm’s appellate and constitutional litigation practice.';
+  const verbatim = checkDraft({ body: copied, claims: [{ sentence: copied, fact_ids: ['F1'] }] }, { avoid, facts })
+    .issues.find((i) => i.kind === 'verbatim');
+  assert.equal(verbatim.fact_id, 'F1');
+  assert.ok(verbatim.excerpt.split(' ').length >= 12);
+
+  const missing = checkDraft({ body: 'Jay Lefkowitz practises law.', claims: [] }, { facts, targets: [target], names })
+    .issues.find((i) => i.kind === 'target_missing');
+  assert.equal(missing.label, 'Columbia Law School');
+});
+
+test('an AI revision works on exactly the issues the person saw', () => {
+  const checks = checkDraft(
+    { title: 'Notes', body: 'A long career.\n\nColumbia Law School hosted a lecture. Contact: [CONFIRM: press office email]', claims: [] },
+    { facts, targets: [target], names }
+  );
+  const blocking = checks.issues.filter((i) => i.severity === 'block');
+  assert.ok(blocking.length && checks.issues.length > blocking.length, 'the example has both kinds of issue');
+
+  assert.deepEqual(pickIssues(checks, { allBlocking: true, checkedAt: checks.checked_at }).issues, blocking);
+  assert.deepEqual(pickIssues(checks, { indices: [1, 1, 99, -1, 'x'] }).issues, [checks.issues[1]], 'duplicates and bad positions are ignored');
+  assert.equal(pickIssues(checks, { indices: [0], checkedAt: '2000-01-01T00:00:00.000Z' }).status, 409, 'a stale list is refused, not guessed at');
+  assert.equal(pickIssues(checks, { indices: [] }).status, 400);
+  assert.equal(pickIssues({ issues: [] }, { allBlocking: true }).status, 400);
+  assert.equal(pickIssues({ issues: checks.issues.filter((i) => i.severity !== 'block'), checked_at: 'x' }, { allBlocking: true }).status, 400);
 });

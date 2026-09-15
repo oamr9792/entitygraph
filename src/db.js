@@ -556,6 +556,12 @@ CREATE TABLE IF NOT EXISTS content_drafts (
   model            TEXT,
   cost_usd         REAL NOT NULL DEFAULT 0,
   published_url    TEXT,
+  -- The text an AI revision replaced, so one revision can be undone.
+  previous_title   TEXT,
+  previous_body    TEXT,
+  previous_claims  TEXT,
+  previous_checks  TEXT,
+  revision_note    TEXT,
   created_by       INTEGER REFERENCES app_user(id) ON DELETE SET NULL,
   approved_by      INTEGER REFERENCES app_user(id) ON DELETE SET NULL,
   created_at       TEXT NOT NULL DEFAULT (datetime('now')),
@@ -609,6 +615,9 @@ ensureColumn('entities', 'probe_terms', "TEXT NOT NULL DEFAULT '[]'");
 ensureColumn('serp_snapshots', 'signals', "TEXT NOT NULL DEFAULT '{}'");
 ensureColumn('content_sources', 'byline_client', 'INTEGER NOT NULL DEFAULT 0');
 ensureColumn('serp_results', 'rank_absolute', 'INTEGER');
+for (const column of ['previous_title', 'previous_body', 'previous_claims', 'previous_checks', 'revision_note']) {
+  ensureColumn('content_drafts', column, 'TEXT');
+}
 
 // --- Query helpers ----------------------------------------------------------
 
