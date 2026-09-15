@@ -531,6 +531,34 @@ CREATE TABLE IF NOT EXISTS audit_log (
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_audit_created ON audit_log(created_at);
+
+-- Content drafts built from an association's action plan. The brief is stored
+-- whole, so a draft can always be checked against the facts and the terms to
+-- avoid that it was written from, even after the corpus has moved on.
+CREATE TABLE IF NOT EXISTS content_drafts (
+  id               INTEGER PRIMARY KEY,
+  entity_id        INTEGER NOT NULL REFERENCES entities(id) ON DELETE CASCADE,
+  association_id   INTEGER NOT NULL REFERENCES associations(id) ON DELETE CASCADE,
+  format           TEXT NOT NULL,
+  mode             TEXT NOT NULL CHECK (mode IN ('grow','correct')),
+  status           TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft','approved','published','archived')),
+  title            TEXT,
+  body             TEXT,
+  claims           TEXT NOT NULL DEFAULT '[]',
+  brief            TEXT NOT NULL DEFAULT '{}',
+  inputs           TEXT NOT NULL DEFAULT '{}',
+  checks           TEXT,
+  notes_for_editor TEXT,
+  generation_error TEXT,
+  model            TEXT,
+  cost_usd         REAL NOT NULL DEFAULT 0,
+  published_url    TEXT,
+  created_by       INTEGER REFERENCES app_user(id) ON DELETE SET NULL,
+  approved_by      INTEGER REFERENCES app_user(id) ON DELETE SET NULL,
+  created_at       TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at       TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_content_entity ON content_drafts(entity_id, updated_at);
 `;
 
 db.exec(SCHEMA);

@@ -7,6 +7,7 @@ import * as dfs from '../providers/dataforseo.js';
 import { ingestCandidates, recordVersion } from '../services/ingest.js';
 import { fetchPageText, storeBody, mapPool } from '../services/fetch.js';
 import { withSerpPrior, serpRankFromRef } from '../services/disambiguation.js';
+import { MIN_READABLE_CHARS, needsFullRead, surnameAnchor, windowsForRank } from '../services/serp-coverage.js';
 import { probeTermsFromSignals, allocateProbeBudget } from '../providers/serp-signals.js';
 import { scoreDocument, adjudicate, saveMatch } from '../services/disambiguation.js';
 import { buildWindows, extractFromWindow } from '../services/extraction.js';
@@ -337,14 +338,17 @@ const HANDLERS = {
     // and SERP documents carry no domain rank — so they sorted last, fell
     // outside the fetch limit, and were scored from Google's two-line
     // description. The pages people actually see were the pages least read.
+    const serpRanks = state.serpRanks ?? new Map();
+    // Google's own result pages are read again on every build until they have
+    // been read properly. A page that was blocked, failed or came back as a
+    // cookie wall on one build used to stay that way for good, and its two-line
+    // Google description was all extraction ever saw.
     const candidates = all(
       `SELECT * FROM documents
         WHERE id IN (${state.documentIds.map(() => '?').join(',') || 'NULL'})
-          AND fetch_status = 'snippet_only'
         ORDER BY domain_rank DESC NULLS LAST, prominence DESC`,
       ...state.documentIds
-    );
-    const serpRanks = state.serpRanks ?? new Map();
+    ).filter((doc) => doc.fetch_status === 'snippet_only' || (serpRanks.has(doc.id) && needsFullRead(doc)));
     const priority = state.priorityDocumentIds ?? new Set();
     const tier = (doc) => (serpRanks.has(doc.id) ? 0 : priority.has(doc.id) ? 1 : 2);
     const docs = candidates
@@ -361,34 +365,44 @@ const HANDLERS = {
     let fetched = 0;
     let failed = 0;
     let fallbacks = 0;
-    // The DataForSEO content-parsing fallback is a billed call. Letting it fire
-    // on every unreachable page turns a free failure into a paid one, hundreds
-    // of times over, for documents that already have a usable snippet. Spend it
-    // on the best-ranked documents and let the rest fall back to the snippet.
-    const fallbackBudget = state.options.fallbackBudget ?? 25;
+    // The DataForSEO content-parsing fallback is a billed call, but a cheap one,
+    // and a page nobody reads contributes nothing. Google's result pages always
+    // get it when a direct fetch is blocked, fails or returns a shell; the rest
+    // of the corpus shares a generous allowance, still under the cost ceiling.
+    const fallbackBudget = state.options.fallbackBudget ?? 150;
 
     await mapPool(docs, state.options.fetchConcurrency ?? 8, async (doc) => {
       if (ctx.shouldStop?.()) return;
-      const allowProviderFallback = fallbacks < fallbackBudget;
-      if (allowProviderFallback) fallbacks += 1;
+      const fromGoogle = serpRanks.has(doc.id);
+      const allowProviderFallback = fromGoogle || fallbacks < fallbackBudget;
+      if (allowProviderFallback && !fromGoogle) fallbacks += 1;
       const res = await fetchPageText(doc.url, {
         entityId: state.entity.id,
         jobId: ctx.jobId,
         allowProviderFallback,
+        // A Google result that comes back this short is almost always a shell
+        // rather than the page Google indexed, so it is worth the provider read.
+        minChars: fromGoogle ? MIN_READABLE_CHARS : 200,
       });
-      if (res.ok) {
+      if (res.ok && (res.text?.length ?? 0) > (doc.body_chars ?? 0)) {
         const stored = storeBody(doc.id, res.text);
         recordVersion(doc.id, { contentHash: contentHash(stored), bodyChars: stored.length, publishedAt: doc.published_at });
         fetched += 1;
-      } else {
+      } else if (!res.ok && !doc.body_chars) {
         run(`UPDATE documents SET fetch_status = ? WHERE id = ?`, res.status, doc.id);
+        failed += 1;
+      } else if (!res.ok) {
+        // A retry that fails keeps whatever an earlier build did manage to read.
         failed += 1;
       }
       await ctx.heartbeat?.({ step: 'fetch_evidence_windows', fetched, failed, of: docs.length });
     });
 
     state.counts.fetched = fetched;
-    return `${fetched} pages fetched, ${failed} unavailable, ${state.documentIds.length - docs.length} left on snippet only`;
+    const googleUnread = [...serpRanks.keys()]
+      .filter((id) => needsFullRead(get(`SELECT fetch_status, body_chars FROM documents WHERE id = ?`, id)))
+      .length;
+    return `${fetched} pages fetched, ${failed} unavailable, ${state.documentIds.length - docs.length} left on snippet only; Google result pages read in full: ${serpRanks.size - googleUnread} of ${serpRanks.size}`;
   },
 
   /** §8 — markers first, LLM adjudication only for the review band (§66). */
@@ -463,6 +477,14 @@ const HANDLERS = {
         ORDER BY d.domain_rank DESC NULLS LAST`,
       state.entity.id
     );
+    // Google's result pages first, in rank order. They carry no domain rank, so
+    // they used to be extracted last — and a build that reached its cost ceiling
+    // stopped before the pages people actually see had been read at all.
+    const googleRank = (doc) => state.serpRanks?.get(doc.id) ?? serpRankFromRef(doc.provider_ref);
+    const rankOrder = (doc) => googleRank(doc) ?? Number.MAX_SAFE_INTEGER;
+    docs.sort((a, b) => rankOrder(a) - rankOrder(b));
+    const surname = surnameAnchor(profile);
+    let fromGoogle = 0;
 
     let associationsFound = 0;
     let evidenceRows = 0;
@@ -477,8 +499,18 @@ const HANDLERS = {
     await mapPool(docs, state.options.extractConcurrency ?? 5, async (doc) => {
       if (ctx.shouldStop?.()) return;
       const text = [doc.title, doc.snippet, doc.body_text].filter(Boolean).join('\n\n');
-      const windows = buildWindows(text, aliases, { maxWindows: state.options.windowsPerDocument ?? 3 });
+      // A page Google ranks for the name is read more thoroughly: more windows,
+      // and for a person, windows around later surname-only mentions too —
+      // a profile names someone in full once and uses the surname after that.
+      const rank = googleRank(doc);
+      const anchors = rank && surname ? [surname] : [];
+      const nameTerms = [...aliases, ...anchors];
+      const windows = buildWindows(text, aliases, {
+        maxWindows: windowsForRank(rank, state.options.windowsPerDocument ?? 3),
+        secondary: anchors,
+      });
       if (!windows.length) return;
+      if (rank) fromGoogle += 1;
 
       run(`DELETE FROM evidence WHERE entity_id = ? AND document_id = ? AND manually_verified = 0`, state.entity.id, doc.id);
       const perAssociationCount = new Map();
@@ -486,7 +518,7 @@ const HANDLERS = {
       for (const window of windows) {
         let extraction;
         try {
-          extraction = await extractFromWindow(profile, window, { entityId: state.entity.id, jobId: ctx.jobId });
+          extraction = await extractFromWindow(profile, window, { entityId: state.entity.id, jobId: ctx.jobId, extraNames: anchors });
         } catch (err) {
           if (err.status === 429) throw err; // a budget stop must halt the run
           continue;
@@ -509,7 +541,7 @@ const HANDLERS = {
 
           // Measure §24's distance between the nearest name mention and the
           // nearest mention of the association, inside this window.
-          const nameHits = findOccurrences(window.text, aliases);
+          const nameHits = findOccurrences(window.text, nameTerms);
           const assocHits = findOccurrences(window.text, [association.surface_form, association.canonical_label]);
           let bestDistance = null;
           let bestBoundary = 'same_paragraph';
@@ -566,7 +598,7 @@ const HANDLERS = {
     });
 
     state.counts.evidence = evidenceRows;
-    return `${evidenceRows} evidence rows from ${processed} documents${discarded ? `; ${discarded} unsupported associations discarded` : ''}`;
+    return `${evidenceRows} evidence rows from ${processed} documents (${fromGoogle} of them Google result pages)${discarded ? `; ${discarded} unsupported associations discarded` : ''}`;
   },
 
   async canonicalise_associations(state, ctx) {

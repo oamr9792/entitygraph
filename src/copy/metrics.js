@@ -228,6 +228,12 @@ export const METRICS = Object.freeze({
     what: 'Whether an LLM or the fallback pattern-matcher read this page.',
     look: 'Rows marked fallback are less accurate and some of their labels will be junk.',
   },
+  google_position: {
+    plain: 'Position on Google',
+    advanced: 'SERP position',
+    what: 'Where this page appears in Google’s results for the client’s name, if it appears at all.',
+    look: 'Evidence from pages Google shows for the name is what searchers actually read.',
+  },
 
   // --- Co-occurrence -------------------------------------------------------
   lift: {
@@ -314,6 +320,12 @@ export const DISCLAIMERS = Object.freeze({
     'Bands compare associations within this one client. They do not compare clients.',
   simulation:
     'These projections describe this tool’s own association metric under the stated assumptions. They are not predictions of Google rankings, and no part of this model can see Google’s retrieval.',
+  content:
+    'Drafts are built only from sourced passages and your own notes, and a person must check and approve each one before it is used. New content does not remove existing coverage; it changes what else is said about the client.',
+  content_disclosure:
+    'Publish under the client’s own name or clearly attributed to them. Never present it as independent reporting, a review, or someone else’s testimony.',
+  content_optimisation:
+    'These targets follow this tool’s own scoring model, which approximates factors described in Google patents. They are not a guarantee of how Google will treat the page.',
 });
 
 /** §94 — the specific messages for weak and empty states. */

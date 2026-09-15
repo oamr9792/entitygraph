@@ -1,0 +1,161 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+
+import {
+  FORMATS, FORMAT_ORDER, strategyFor, strengthenStrategy, avoidTermsFor, usableAliases, checkDraft, targetCoverage,
+  verbatimOverlaps, outlineFor,
+} from '../src/services/content-checks.js';
+
+/**
+ * The content builder's rules. Drafts are only as safe as these checks, so each
+ * failure a reviewer would look for first has a test.
+ */
+
+const route = (key) => ({ key, title: key });
+
+test('every format is ordered, described and has an outline', () => {
+  assert.deepEqual([...FORMAT_ORDER].sort(), Object.keys(FORMATS).sort());
+  for (const key of FORMAT_ORDER) {
+    assert.ok(FORMATS[key].label && FORMATS[key].where && FORMATS[key].length, key);
+    assert.ok(outlineFor(key, { entityName: 'Jane Smith', grow: [{ label: 'Harbour Capital' }] }).length >= 3, key);
+  }
+});
+
+test('the plan decides what content is recommended', () => {
+  assert.equal(strategyFor({ routes: [route('challenge_accuracy'), route('displace')] }).recommended[0], 'correction_request');
+  assert.equal(strategyFor({ routes: [route('displace')] }).recommended[0], 'article');
+  assert.deepEqual(strategyFor({ routes: [route('retrieval_gap')] }).recommended, ['profile', 'faq']);
+  // A plan with no content route still gets a sensible default.
+  assert.deepEqual(strategyFor({ routes: [route('let_it_decay')] }).recommended, ['profile', 'article']);
+});
+
+test('a possibly misattributed association blocks content until the identity is checked', () => {
+  const s = strategyFor({ routes: [route('verify_identity'), route('displace')] });
+  assert.equal(s.blocked, true);
+  assert.equal(s.notices[0].level, 'block');
+});
+
+test('a carried association points at the association carrying it', () => {
+  const s = strategyFor({ routes: [route('address_carrier')], carried_by: [{ association_id: 9, label: 'Plea Deal' }] });
+  assert.equal(s.notices[0].association_id, 9);
+  assert.match(s.notices[0].text, /Plea Deal/);
+});
+
+test('terms to avoid include aliases and a person’s surname, never the client’s own name', () => {
+  const avoid = avoidTermsFor({
+    label: 'Jeffrey Epstein',
+    kind: 'named_entity',
+    category: 'person',
+    aliases: ['Epstein', 'J. Epstein'],
+    entityName: 'Jay Lefkowitz',
+    carriers: ['Epstein Plea Deal'],
+  });
+  const terms = avoid.map((a) => a.term.toLowerCase());
+  assert.ok(terms.includes('jeffrey epstein'));
+  assert.ok(terms.includes('epstein'));
+  assert.equal(avoid.find((a) => a.term === 'Epstein Plea Deal').severity, 'warn');
+
+  const shared = avoidTermsFor({ label: 'Anna Lefkowitz', kind: 'named_entity', category: 'person', entityName: 'Jay Lefkowitz' });
+  assert.ok(!shared.some((a) => a.term.toLowerCase() === 'lefkowitz'), 'the client’s own surname is not banned');
+});
+
+const facts = [
+  { id: 'F1', source: 'evidence', passage: 'Jay Lefkowitz is a partner at Kirkland and Ellis where he leads the firm’s appellate and constitutional litigation practice in New York.' },
+  { id: 'P1', source: 'identity', passage: 'Jay Lefkowitz: organization — Kirkland & Ellis' },
+];
+const avoid = [{ term: 'Epstein', reason: 'it is the association this content exists to displace', severity: 'block' }];
+
+test('a clean, cited draft passes', () => {
+  const body = 'Jay Lefkowitz practises appellate law at Kirkland & Ellis in New York.';
+  const result = checkDraft({ title: 'Jay Lefkowitz', body, claims: [{ sentence: body, fact_ids: ['F1', 'P1'] }] }, { avoid, facts });
+  assert.equal(result.ok, true, JSON.stringify(result.issues));
+});
+
+test('naming the displaced association blocks approval, in the title as well as the body', () => {
+  const result = checkDraft({ title: 'Beyond Epstein', body: 'A career in appellate law.', claims: [] }, { avoid, facts });
+  assert.equal(result.ok, false);
+  assert.equal(result.issues[0].kind, 'avoid_term');
+});
+
+test('claims without a known source block approval', () => {
+  const result = checkDraft(
+    { body: 'He won every case.', claims: [{ sentence: 'He won every case.', fact_ids: [] }, { sentence: 'x', fact_ids: ['F99'] }] },
+    { avoid, facts }
+  );
+  assert.equal(result.issues.filter((i) => i.kind === 'unsupported_claim').length, 2);
+  assert.equal(result.ok, false);
+});
+
+test('an uncited figure is flagged as a warning', () => {
+  const result = checkDraft({ body: 'He has argued 40 appeals.', claims: [] }, { avoid, facts });
+  assert.equal(result.issues[0].kind, 'uncited_figure');
+  assert.equal(result.ok, true);
+});
+
+test('copying a publisher’s sentence blocks approval, except in a correction request', () => {
+  const copied = 'Lefkowitz is a partner at Kirkland and Ellis where he leads the firm’s appellate and constitutional litigation practice.';
+  assert.equal(verbatimOverlaps(copied, facts).length, 1);
+  assert.equal(checkDraft({ body: copied, claims: [{ sentence: copied, fact_ids: ['F1'] }] }, { avoid, facts }).ok, false);
+  assert.equal(checkDraft({ body: copied, claims: [{ sentence: copied, fact_ids: ['F1'] }] }, { avoid, facts, mode: 'correct' }).ok, true);
+  // The identity profile is the client’s own words and may be repeated.
+  assert.equal(verbatimOverlaps(copied, facts.filter((f) => f.source === 'identity')).length, 0);
+});
+
+test('extraction fragments that contain the client’s name are not treated as names for an association', () => {
+  const kept = usableAliases(
+    ['Epstein', 'Epstein’s attorney Jay Lefkowitz', 'defence lawyer, Jay Lefkowitz', 'Epstein assembled a team of prominent criminal defense attorneys'],
+    { entityName: 'Jay Lefkowitz', label: 'Jeffrey Epstein' }
+  );
+  assert.deepEqual(kept, ['Epstein']);
+  // A spouse shares the surname; their own name forms are kept.
+  assert.deepEqual(usableAliases(['Anna Lefkowitz'], { entityName: 'Jay Lefkowitz', label: 'Anna R. Lefkowitz' }), ['Anna Lefkowitz']);
+});
+
+test('a positive association is strengthened, not displaced', () => {
+  const s = strengthenStrategy({ association: { label: 'Columbia Law School' }, routes: [route('displace')] });
+  assert.equal(s.reasons[0].route, 'strengthen');
+  assert.ok(!s.recommended.includes('correction_request'));
+  assert.equal(strengthenStrategy({ association: { label: 'x' }, routes: [route('verify_identity')] }).blocked, true);
+});
+
+const target = { association_id: 1, label: 'Columbia Law School', terms: ['Columbia Law'] };
+const names = ['Jay Lefkowitz', 'Lefkowitz'];
+
+test('target coverage reads a draft the way the scoring reads a page', () => {
+  const [strong] = targetCoverage({
+    title: 'Jay Lefkowitz on teaching at Columbia Law School',
+    body: 'Jay Lefkowitz is an adjunct professor at Columbia Law School.\n\nHis seminar at Columbia Law covers appellate practice.',
+  }, [target], { names, cap: 3 });
+  assert.equal(strong.mentions, 3);
+  assert.equal(strong.counted, 3);
+  assert.equal(strong.beside_name, true);
+  assert.equal(strong.in_title, true);
+  assert.equal(strong.in_opening, true);
+
+  const [weak] = targetCoverage({
+    title: 'A career in law',
+    body: 'He has had a long career.\n\nSeparately, Columbia Law School runs an appellate clinic.',
+  }, [target], { names, cap: 3 });
+  assert.equal(weak.beside_name, false);
+  assert.equal(weak.in_opening, false);
+});
+
+test('a draft that drops or buries an association it should strengthen is flagged', () => {
+  const missing = checkDraft({ body: 'Jay Lefkowitz practises appellate law.', claims: [] }, { facts, targets: [target], names });
+  assert.equal(missing.ok, false);
+  assert.ok(missing.issues.some((i) => i.kind === 'target_missing'));
+
+  const buried = checkDraft({ title: 'Notes', body: 'A long career.\n\nColumbia Law School hosted a lecture.', claims: [] }, { facts, targets: [target], names });
+  assert.ok(buried.issues.some((i) => i.kind === 'target_not_beside_name'));
+  assert.ok(buried.issues.some((i) => i.kind === 'target_not_leading'));
+  assert.equal(buried.targets[0].mentions, 1);
+
+  const stuffed = checkDraft({ body: `Jay Lefkowitz and Columbia Law School. ${'Columbia Law School. '.repeat(7)}`, claims: [] }, { facts, targets: [target], names });
+  assert.ok(stuffed.issues.some((i) => i.kind === 'target_repeated'));
+});
+
+test('unconfirmed placeholders block approval', () => {
+  const result = checkDraft({ body: 'Contact: [CONFIRM: press office email]', claims: [] }, { avoid, facts });
+  assert.equal(result.ok, false);
+  assert.equal(result.issues[0].kind, 'placeholder');
+});

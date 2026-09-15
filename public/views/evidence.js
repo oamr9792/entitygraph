@@ -89,9 +89,14 @@ function relatedPanel(associationId) {
   return panel;
 }
 
-export async function evidenceView({ params }) {
+export async function evidenceView({ params, query }) {
   const data = await api(`/api/associations/${params.id}/evidence?include_excluded=1`);
-  const { association, evidence, surface_forms: surfaceForms } = data;
+  const { association, surface_forms: surfaceForms } = data;
+  // Pages Google shows for the name are what searchers read, so they can be
+  // looked at on their own.
+  const onGoogle = data.evidence.filter((e) => e.google_rank);
+  const googleOnly = query.get('google') === '1';
+  const evidence = googleOnly ? onGoogle : data.evidence;
 
   const act = async (payload, message) => {
     try {
@@ -107,6 +112,8 @@ export async function evidenceView({ params }) {
   const columns = [
     { key: 'date', label: 'Date', render: (r) => h('span', { title: r.date_is_inferred ? 'Date inferred from the provider’s group date, not stated by the publisher' : '' },
         fmt.date(r.date), r.date_is_inferred ? h('span', { class: 'dim' }, '*') : null) },
+    { key: 'google_rank', metric: 'google_position', num: true, sortValue: (r) => r.google_rank ?? null,
+      render: (r) => (r.google_rank ? h('span', { class: 'score-cell' }, `#${r.google_rank}`) : h('span', { class: 'dim' }, '—')) },
     { key: 'source', label: 'Source', render: (r) => h('div', {},
         h('a', { href: r.url, target: '_blank', rel: 'noopener noreferrer' }, r.source),
         r.source_classification ? h('div', { class: 'small dim' }, r.source_classification) : null) },
@@ -157,6 +164,7 @@ export async function evidenceView({ params }) {
       ),
       h('div', { class: 'toolbar' },
         h('button', { class: 'primary', onclick: () => navigate(`#/associations/${association.id}/plan`) }, 'Action plan'),
+        h('button', { onclick: () => navigate(`#/associations/${association.id}/content`) }, 'Build content'),
         h('a', { class: 'btn', href: `/api/associations/${association.id}/evidence?format=csv` }, 'Export CSV'),
         h('button', { onclick: () => navigate(`#/entities/${association.entity_id}`) }, 'Back to dashboard')
       )
@@ -174,7 +182,12 @@ export async function evidenceView({ params }) {
       : null,
     relatedPanel(params.id),
     h('div', { class: 'panel' },
-      h('h2', {}, 'Supporting evidence'),
+      h('h2', {}, 'Supporting evidence',
+        h('span', { class: 'small dim' }, `${onGoogle.length} of ${data.evidence.length} rows are from pages Google shows for the name`)),
+      h('div', { class: 'toolbar', style: { padding: '0.6rem 0.95rem 0', marginBottom: '0.3rem' } },
+        h('div', { class: 'segmented' },
+          h('button', { class: googleOnly ? '' : 'active', onclick: () => navigate(`#/associations/${params.id}`) }, 'All pages'),
+          h('button', { class: googleOnly ? 'active' : '', onclick: () => navigate(`#/associations/${params.id}?google=1`) }, 'Only pages on Google'))),
       h('div', { class: 'panel-body tight' },
         evidence.length
           ? sortableTable(columns, evidence, { initialSort: 'weighted_evidence_score' })

@@ -161,7 +161,7 @@ const safeCodePoint = (n) => {
  * an unreachable page: a document we could not fetch still scores from its
  * snippet, and a pipeline that dies on one 403 is useless at corpus scale.
  */
-export async function fetchPageText(url, { entityId = null, jobId = null, allowProviderFallback = true } = {}) {
+export async function fetchPageText(url, { entityId = null, jobId = null, allowProviderFallback = true, minChars = 200 } = {}) {
   if (!config.pageFetchEnabled) return { ok: false, status: 'skipped', reason: 'page fetching disabled' };
 
   await hostGap(url);
@@ -200,9 +200,10 @@ export async function fetchPageText(url, { entityId = null, jobId = null, allowP
       return viaProvider ?? { ok: false, status: 'failed', reason: 'empty or oversized response' };
     }
     const text = extractText(html);
-    if (text.length < 200) {
+    if (text.length < minChars) {
       const viaProvider = allowProviderFallback ? await providerFallback(url, entityId, jobId) : null;
-      if (viaProvider) return viaProvider;
+      // Keep whichever read found more of the page.
+      if (viaProvider && viaProvider.text.length > text.length) return viaProvider;
     }
     return { ok: true, status: 'fetched', text, source: 'direct' };
   } catch (err) {

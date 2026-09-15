@@ -14,9 +14,11 @@ import { analysisRoutes } from './src/routes/analysis.js';
 import { evidenceRoutes } from './src/routes/evidence.js';
 import { googleRoutes } from './src/routes/google.js';
 import { summaryRoutes } from './src/routes/summary.js';
+import { contentRoutes } from './src/routes/content.js';
+import { googleTraceRoutes } from './src/routes/google-trace.js';
 
 const router = new Router();
-for (const group of [authRoutes, entityRoutes, analysisRoutes, evidenceRoutes, googleRoutes, summaryRoutes]) {
+for (const group of [authRoutes, entityRoutes, analysisRoutes, evidenceRoutes, googleRoutes, googleTraceRoutes, summaryRoutes, contentRoutes]) {
   router.routes.push(...group.routes);
 }
 

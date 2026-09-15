@@ -349,6 +349,7 @@ function shell(content, path) {
     const essentials = [
       link(`/entities/${entityId}/summary`, 'Summary'),
       link(`/entities/${entityId}`, 'Dashboard'),
+      link(`/entities/${entityId}/content`, 'Content'),
     ];
     const upkeep = [
       link(`/entities/${entityId}/review`, plain ? 'Same person?' : 'Review queue'),
@@ -440,6 +441,9 @@ route('/entities/:id/identity', () => import('./views/review.js').then((m) => m.
 route('/entities/:id/jobs', () => import('./views/review.js').then((m) => m.jobsView));
 route('/associations/:id', () => import('./views/evidence.js').then((m) => m.evidenceView));
 route('/associations/:id/plan', () => import('./views/plan.js').then((m) => m.planView));
+route('/associations/:id/content', () => import('./views/content.js').then((m) => m.contentBuilderView));
+route('/content/:id', () => import('./views/content.js').then((m) => m.draftView));
+route('/entities/:id/content', () => import('./views/content.js').then((m) => m.contentListView));
 
 window.addEventListener('hashchange', render);
 

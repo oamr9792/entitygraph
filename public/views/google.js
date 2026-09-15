@@ -26,7 +26,8 @@ export function googlePanel(entityId) {
       }
 
       body.append(h('p', { class: 'small dim', style: { marginTop: 0 } },
-        `Google’s results for “${g.query}”, captured ${fmt.date(g.captured_at)} — ${fmt.n(g.organic_results)} organic results.`));
+        `Google’s results for “${g.query}”, captured ${fmt.date(g.captured_at)} — ${fmt.n(g.organic_results)} organic results. `,
+        h('a', { href: `#/entities/${entityId}/serp` }, 'See where each result ended up')));
 
       if (g.note) body.append(h('p', { class: 'interpretation' }, g.note));
 

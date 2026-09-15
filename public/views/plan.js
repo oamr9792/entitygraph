@@ -19,6 +19,14 @@ const VERDICT_LABELS = {
   possibly_misattributed: ['Possibly the wrong person', 'good'],
 };
 
+// The routes content can serve, and the format each starts from.
+const CONTENT_FORMAT = {
+  displace: 'article',
+  retrieval_gap: 'profile',
+  not_a_metrics_problem: 'profile',
+  challenge_accuracy: 'correction_request',
+};
+
 export async function planView({ params }) {
   const plan = await api(`/api/associations/${params.id}/action-plan`);
 
@@ -56,9 +64,16 @@ export async function planView({ params }) {
           ),
           h('p', { class: 'route-why' }, r.rationale),
           h('ul', { class: 'route-actions' }, r.actions.map((a) => h('li', {}, a))),
-          screens[r.screen]
-            ? h('button', { class: 'small', onclick: () => navigate(screens[r.screen][0]) }, screens[r.screen][1])
-            : null
+          h('div', { class: 'toolbar', style: { margin: 0 } },
+            screens[r.screen]
+              ? h('button', { class: 'small', onclick: () => navigate(screens[r.screen][0]) }, screens[r.screen][1])
+              : null,
+            CONTENT_FORMAT[r.key]
+              ? h('button', {
+                  class: 'small',
+                  onclick: () => navigate(`#/associations/${params.id}/content?format=${CONTENT_FORMAT[r.key]}&purpose=displace`),
+                }, 'Draft content for this')
+              : null)
         )
       )
     : [h('div', { class: 'empty' }, 'No route applies — this association is not currently actionable through this model.')];
@@ -120,6 +135,7 @@ export async function planView({ params }) {
           h('span', { class: `sentiment ${plan.association.sentiment?.label ?? ''}` }, plan.association.sentiment?.label ?? ''))
       ),
       h('div', { class: 'toolbar' },
+        h('button', { class: 'primary', onclick: () => navigate(`#/associations/${params.id}/content`) }, 'Build content'),
         h('button', { onclick: () => navigate(`#/associations/${params.id}`) }, 'Evidence'),
         h('button', { onclick: () => navigate(`#/entities/${plan.entity.id}`) }, 'Dashboard')
       )

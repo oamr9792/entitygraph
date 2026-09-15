@@ -97,23 +97,48 @@ const SYSTEM_PROMPT = (profile) =>
  * §15 — the windows we send for extraction. One per mention of the entity,
  * merged when they overlap so a paragraph with three mentions costs one call
  * rather than three.
+ *
+ * `secondary` names are further anchors — a person's surname on a page already
+ * accepted as about them — used only once every full-name mention has a
+ * window, and only when the page names the entity in full at least once.
  */
-export function buildWindows(text, aliases, { maxChars = 1000, maxWindows = 6 } = {}) {
+export function buildWindows(text, aliases, { maxChars = 1000, maxWindows = 6, secondary = [] } = {}) {
   const hits = findOccurrences(text, aliases);
   if (!hits.length) return [];
-  const windows = [];
-  for (const hit of hits) {
-    const w = evidenceWindow(text, hit.start, { maxChars });
+
+  const mergeInto = (windows, w, position) => {
     const last = windows[windows.length - 1];
     if (last && w.offset < last.offset + last.text.length) {
       // Overlapping: extend rather than duplicate.
       const end = Math.max(last.offset + last.text.length, w.offset + w.text.length);
       last.text = text.slice(last.offset, end);
-      last.mentions.push(hit.start);
-      continue;
+      last.mentions.push(position);
+      return;
     }
-    windows.push({ ...w, mentions: [hit.start] });
+    windows.push({ ...w, mentions: [position] });
+  };
+
+  let windows = [];
+  for (const hit of hits) {
+    mergeInto(windows, evidenceWindow(text, hit.start, { maxChars }), hit.start);
     if (windows.length >= maxWindows) break;
+  }
+  if (!secondary.length || windows.length >= maxWindows) return windows;
+
+  const inside = (position) => windows.some((w) => position >= w.offset && position < w.offset + w.text.length);
+  for (const hit of findOccurrences(text, secondary)) {
+    if (windows.length >= maxWindows) break;
+    if (inside(hit.start)) continue;
+    const added = [...windows, { ...evidenceWindow(text, hit.start, { maxChars }), mentions: [hit.start] }]
+      .sort((a, b) => a.offset - b.offset);
+    windows = [];
+    for (const w of added) mergeInto(windows, { ...w, mentions: undefined }, w.mentions[0]);
+    // Merging re-seeds each window's mentions from its first; restore the rest.
+    for (const w of windows) {
+      w.mentions = added
+        .filter((a) => a.offset >= w.offset && a.offset < w.offset + w.text.length)
+        .flatMap((a) => a.mentions);
+    }
   }
   return windows;
 }
@@ -135,9 +160,15 @@ function evidenceSupported(windowText, quote) {
   return hay.includes(head);
 }
 
-export async function extractFromWindow(profile, window, { entityId = null, jobId = null } = {}) {
+export async function extractFromWindow(profile, window, { entityId = null, jobId = null, extraNames = [] } = {}) {
+  // The LLM judges identity from the passage itself. The fallback extractor
+  // only recognises the entity by name, so a window anchored on a surname
+  // needs that surname counted as a name.
+  const fallbackProfile = extraNames.length
+    ? { ...profile, aliases: [...(profile.aliases ?? []), ...extraNames] }
+    : profile;
   const llm = getLlm();
-  if (!llm) return heuristicExtract(profile, window);
+  if (!llm) return heuristicExtract(fallbackProfile, window);
 
   let res;
   try {
@@ -160,9 +191,9 @@ export async function extractFromWindow(profile, window, { entityId = null, jobI
     // used to lose every passage silently, which produced an empty dashboard
     // from a corpus the client had already paid for. Lower-quality evidence,
     // clearly labelled as such, beats no evidence and no explanation.
-    return heuristicExtract(profile, window);
+    return heuristicExtract(fallbackProfile, window);
   }
-  if (!res) return heuristicExtract(profile, window);
+  if (!res) return heuristicExtract(fallbackProfile, window);
 
   const data = res.data ?? {};
   const kept = [];

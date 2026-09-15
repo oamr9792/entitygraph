@@ -71,7 +71,12 @@ evidenceRoutes.get('/api/associations/:id/evidence', (req, res, params, url) => 
   const rows = all(
     `SELECT e.*, d.url, d.root_domain, d.title, d.published_at AS doc_published, d.group_date,
             d.duplicate_cluster_id, d.is_cluster_primary, d.fetch_status,
-            dom.classification, dom.classification_override, c.kind AS cluster_kind, c.member_count
+            dom.classification, dom.classification_override, c.kind AS cluster_kind, c.member_count,
+            (SELECT MIN(r.rank) FROM serp_results r
+              WHERE r.document_id = d.id
+                AND r.snapshot_id = (SELECT s.id FROM serp_snapshots s
+                                      WHERE s.entity_id = e.entity_id AND s.query_kind = 'entity'
+                                      ORDER BY s.captured_at DESC LIMIT 1)) AS google_rank
        FROM evidence e
        JOIN documents d ON d.id = e.document_id
        LEFT JOIN domains dom ON dom.root_domain = d.root_domain
@@ -118,6 +123,7 @@ evidenceRoutes.get('/api/associations/:id/evidence', (req, res, params, url) => 
     excluded: Boolean(r.excluded),
     exclusion_reason: r.exclusion_reason,
     fetch_status: r.fetch_status,
+    google_rank: r.google_rank ?? null,
   }));
 
   if (url.searchParams.get('format') === 'csv') {

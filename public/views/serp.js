@@ -1,5 +1,6 @@
 import { h, api, fmt, disclaimer, toast, colourFor } from '../app.js';
 import { metricLabel, term, scoreWithBasis, labelText, METRICS } from '../lib/metrics-ui.js';
+import { googleTracePanel } from './google-trace.js';
 
 /**
  * §52, §53, §77 — the Google overlay.
@@ -135,6 +136,7 @@ export async function serpView({ params }) {
           )
         )
       : null,
+    googleTracePanel(params.id),
     h('div', { class: 'split-2' },
       h('div', { class: 'panel' },
         h('h2', {}, metricLabel('google_retrieval_score')),
