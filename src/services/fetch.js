@@ -68,7 +68,7 @@ export async function mapPool(items, concurrency, worker) {
  * our token and '*', and Allow beats Disallow at equal specificity, which is
  * the behaviour the major crawlers implement.
  */
-async function robotsAllows(url) {
+export async function robotsAllows(url) {
   let parsed;
   try { parsed = new URL(url); } catch { return false; }
   const origin = parsed.origin;

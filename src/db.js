@@ -559,6 +559,23 @@ CREATE TABLE IF NOT EXISTS content_drafts (
   updated_at       TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_content_entity ON content_drafts(entity_id, updated_at);
+
+-- Pages pasted in to be analysed. Deliberately not documents: they are
+-- material for writing, and must never count as evidence or move a score.
+CREATE TABLE IF NOT EXISTS content_sources (
+  id           INTEGER PRIMARY KEY,
+  entity_id    INTEGER NOT NULL REFERENCES entities(id) ON DELETE CASCADE,
+  url          TEXT NOT NULL,
+  final_url    TEXT,
+  title        TEXT,
+  body         TEXT NOT NULL,
+  chars        INTEGER NOT NULL DEFAULT 0,
+  via          TEXT NOT NULL,
+  names_client INTEGER NOT NULL DEFAULT 0,
+  fetched_by   INTEGER REFERENCES app_user(id) ON DELETE SET NULL,
+  created_at   TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_content_sources_entity ON content_sources(entity_id, created_at);
 `;
 
 db.exec(SCHEMA);

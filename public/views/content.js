@@ -16,11 +16,12 @@ function factList(facts) {
   return h('div', { class: 'facts' }, facts.map((f) => h('div', { class: 'fact', id: `fact-${f.id}` },
     h('span', { class: `chip fact-id ${f.source}` }, f.id),
     h('div', {},
-      f.source === 'evidence'
+      f.source === 'evidence' || f.source === 'page'
         ? h('div', { class: 'small dim' },
-            f.association ? `${f.association} · ` : '',
+            f.source === 'page' ? 'Page to analyse · ' : f.association ? `${f.association} · ` : '',
+            f.google_rank ? `#${f.google_rank} on Google · ` : '',
             h('a', { href: f.url, target: '_blank', rel: 'noopener noreferrer' }, f.domain ?? f.url),
-            ` · ${fmt.date(f.date)}`)
+            f.source === 'page' ? '' : ` · ${fmt.date(f.date)}`)
         : h('div', { class: 'small dim' }, f.source === 'notes' ? 'Your notes' : 'Identity profile'),
       h('blockquote', {}, f.passage)))));
 }
@@ -58,7 +59,7 @@ function placementPanel(p, avoid) {
 
 export async function contentBuilderView({ params, query }) {
   const qs = new URLSearchParams();
-  for (const key of ['format', 'grow', 'document', 'purpose']) if (query.get(key)) qs.set(key, query.get(key));
+  for (const key of ['format', 'grow', 'document', 'purpose', 'source']) if (query.get(key)) qs.set(key, query.get(key));
   const brief = await api(`/api/associations/${params.id}/content-brief?${qs}`);
 
   if (brief.unavailable) {
@@ -142,6 +143,55 @@ export async function contentBuilderView({ params, query }) {
         h('span', { class: 'format-name' }, f.label, f.recommended ? h('span', { class: 'chip good' }, 'recommended') : null),
         h('span', { class: 'small dim' }, f.length),
         h('span', { class: 'small muted' }, f.where))))));
+
+  let sourcePanel = null;
+  if (format.requiresSource) {
+    const s = brief.source;
+    const input = h('input', {
+      type: 'url',
+      placeholder: 'https://… the press release or page to analyse',
+      value: s?.url ?? '',
+      style: { flex: '1 1 22rem' },
+    });
+    const read = h('button', { class: 'primary', type: 'button' }, s ? 'Read another page' : 'Read page');
+    read.addEventListener('click', async () => {
+      if (!input.value.trim()) return;
+      read.disabled = true;
+      read.textContent = 'Reading…';
+      try {
+        const res = await api(`/api/entities/${brief.entity.id}/content-sources`, { method: 'POST', body: { url: input.value.trim() } });
+        go({ source: String(res.source.id) });
+      } catch (err) {
+        toast(err.message, 'error');
+        read.disabled = false;
+        read.textContent = s ? 'Read another page' : 'Read page';
+      }
+    });
+    input.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); read.click(); } });
+    const others = (brief.recent_sources ?? []).filter((r) => r.id !== s?.id).slice(0, 6);
+
+    sourcePanel = h('div', { class: 'panel' },
+      h('h2', {}, 'The page to analyse', s ? h('span', { class: 'chip good' }, 'read') : h('span', { class: 'chip warn' }, 'required')),
+      h('div', { class: 'panel-body' },
+        h('div', { class: 'toolbar', style: { margin: 0 } }, input, read),
+        s
+          ? h('div', { style: { marginTop: '0.7rem' } },
+              h('strong', {}, s.title ?? '(untitled)'), ' ',
+              h('a', { href: s.final_url, target: '_blank', rel: 'noopener noreferrer' }, s.domain),
+              h('div', { class: 'small dim' },
+                `${fmt.n(s.chars)} characters, read ${s.via === 'direct' ? 'directly' : 'through DataForSEO'} · `,
+                `${brief.facts.filter((f) => f.source === 'page').length} passages the draft can cite`),
+              s.names_client ? null : h('div', { class: 'small sentiment negative' }, 'This page never names the client.'))
+          : h('p', { class: 'small muted', style: { marginBottom: 0 } },
+              'Paste the URL of a press release, announcement or article. The draft analyses it — what was announced and why it matters — and carries the associations below. Quotations must match the page word for word.'),
+        others.length
+          ? h('div', { class: 'small', style: { marginTop: '0.6rem' } }, 'Read before: ',
+              others.map((r, i) => [i ? ' · ' : '', h('a', {
+                href: '#',
+                onclick: (e) => { e.preventDefault(); go({ source: String(r.id) }); },
+              }, r.title ?? r.domain)]))
+          : null));
+  }
 
   let topicPanel;
   if (!correcting) {
@@ -255,6 +305,10 @@ export async function contentBuilderView({ params, query }) {
   const acknowledge = h('input', { type: 'checkbox' });
   const generate = h('button', { class: 'primary', type: 'button' },
     brief.llm.available ? 'Generate draft' : 'Save brief');
+  if (format.requiresSource && !brief.source) {
+    generate.disabled = true;
+    generate.title = 'Read the page to analyse first';
+  }
   generate.addEventListener('click', async () => {
     if (brief.strategy.blocked && !acknowledge.checked) {
       toast('Confirm you have checked the identity first.', 'error');
@@ -270,6 +324,7 @@ export async function contentBuilderView({ params, query }) {
           purpose: brief.purpose,
           grow_association_ids: brief.selected_ids,
           source_document_id: brief.source_document_id,
+          source_id: brief.source?.id ?? null,
           notes: notes.value,
           acknowledge: acknowledge.checked,
         },
@@ -319,6 +374,7 @@ export async function contentBuilderView({ params, query }) {
       h('div', { class: 'weak' }, h('span', { class: 'weak-tag' }, 'Disclosure'), h('span', {}, DISCLAIMERS.content_disclosure))),
     reasonsPanel,
     formatPanel,
+    sourcePanel,
     topicPanel,
     notesPanel,
     optimisationPanel,
@@ -451,7 +507,7 @@ export async function draftView({ params }) {
           d.model ? ` · ${d.model}, $${Number(d.cost_usd ?? 0).toFixed(3)}` : '',
           d.published_url ? h('span', {}, ' · ', h('a', { href: d.published_url, target: '_blank', rel: 'noopener noreferrer' }, 'published')) : null)),
       h('div', { class: 'toolbar' },
-        h('button', { onclick: () => navigate(`#/associations/${d.association_id}/content?format=${d.format}&purpose=${d.purpose}`) }, 'Builder'),
+        h('button', { onclick: () => navigate(`#/associations/${d.association_id}/content?format=${d.format}&purpose=${d.purpose}${d.inputs?.source_id ? `&source=${d.inputs.source_id}` : ''}`) }, 'Builder'),
         h('button', { onclick: () => navigate(`#/entities/${d.entity_id}/content`) }, 'All drafts'))),
     disclaimer(),
     h('div', { class: 'weak-states' },

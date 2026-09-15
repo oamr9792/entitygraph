@@ -1,4 +1,4 @@
-import { findOccurrences, normaliseForMatch, splitSentences } from '../util/text.js';
+import { findOccurrences, normaliseForMatch, normaliseWhitespace, splitParagraphs, splitSentences } from '../util/text.js';
 
 /**
  * The content builder's rules, kept free of the database so they can be tested
@@ -25,6 +25,14 @@ export const FORMATS = Object.freeze({
     length: '700–1,100 words',
     mode: 'grow',
     requiresNotes: false,
+  },
+  source_analysis: {
+    label: 'Analysis of a page',
+    where: 'The client’s newsroom or blog, or a publication not already in the corpus, clearly attributed to the client.',
+    length: '600–900 words',
+    mode: 'grow',
+    requiresNotes: false,
+    requiresSource: true,
   },
   faq: {
     label: 'Q&A page',
@@ -56,7 +64,7 @@ export const FORMATS = Object.freeze({
   },
 });
 
-export const FORMAT_ORDER = ['profile', 'article', 'faq', 'press_release', 'social_post', 'correction_request'];
+export const FORMAT_ORDER = ['profile', 'article', 'source_analysis', 'faq', 'press_release', 'social_post', 'correction_request'];
 
 // Which formats each action-plan route actually calls for, and why.
 const ROUTE_FORMATS = {
@@ -69,7 +77,7 @@ const ROUTE_FORMATS = {
     why: 'Google shows this more than the recent web carries it, so the pages that rank for the name are the constraint. Owned pages written for the name compete for those positions.',
   },
   displace: {
-    formats: ['article', 'profile', 'press_release', 'social_post'],
+    formats: ['article', 'source_analysis', 'profile', 'press_release', 'social_post'],
     why: 'Its share falls only if more is published about the client that does not carry it, on domains not already in the corpus.',
   },
   not_a_metrics_problem: {
@@ -124,7 +132,7 @@ export function strategyFor(plan) {
 /** Content for an association the client wants more of, rather than less. */
 export function strengthenStrategy(plan) {
   const base = strategyFor(plan);
-  const formats = ['article', 'profile', 'faq', 'social_post', 'press_release'];
+  const formats = ['article', 'source_analysis', 'profile', 'faq', 'social_post', 'press_release'];
   return {
     blocked: base.blocked,
     notices: base.notices.filter((n) => n.key === 'verify_identity'),
@@ -210,6 +218,73 @@ export function verbatimOverlaps(text, facts, n = 12) {
     }
   }
   return overlaps;
+}
+
+// A quotation: straight or curly double quotes around at least a short phrase.
+const QUOTE = /[“"]([^”"\n]{15,400})[”"]/g;
+
+/** The body with its quotations blanked, so quoting a source is not read as copying it. */
+export const withoutQuotes = (body) => String(body ?? '').replace(QUOTE, ' ');
+
+/**
+ * Quotations that do not appear word for word in any fact. An invented quote is
+ * the most damaging thing an analysis can contain, and the easiest to check.
+ * Very short scare-quoted phrases are ignored, and a quote already marked for
+ * the client to confirm is left to the placeholder check.
+ */
+export function unverifiedQuotes(body, facts = []) {
+  const text = String(body ?? '');
+  const sources = facts.map((f) => normaliseForMatch(f.passage ?? '')).filter(Boolean);
+  const out = [];
+  for (const match of text.matchAll(QUOTE)) {
+    // "…,” said Jane Smith [CONFIRM: …]" — the marker can follow the attribution.
+    const after = text.slice(match.index + match[0].length, match.index + match[0].length + 120);
+    if (/^[^.!?\n]{0,80}\[CONFIRM:/i.test(after)) continue;
+    const parts = match[1]
+      .split(/\s*(?:…|\.\.\.)\s*/)
+      .map((p) => normaliseForMatch(p))
+      .filter((p) => p.split(' ').length >= 3);
+    if (!parts.length) continue;
+    if (parts.every((part) => sources.some((s) => s.includes(part)))) continue;
+    out.push(match[1]);
+  }
+  return out;
+}
+
+/** A page split into citable passages: whole paragraphs where possible, never mid-sentence. */
+export function chunkPassages(text, { maxChars = 700, maxChunks = 25, minChars = 60 } = {}) {
+  // Lines under six words are menus, buttons and footers — "Top", "View All
+  // Practices" — not something a draft should cite.
+  const paragraphs = splitParagraphs(String(text ?? ''))
+    .map((p) => normaliseWhitespace(p.text))
+    .filter((p) => p.split(' ').length >= 6);
+  const chunks = [];
+  let current = '';
+  const flush = () => {
+    if (current.length >= minChars) chunks.push(current);
+    current = '';
+  };
+  for (const paragraph of paragraphs) {
+    if (paragraph.length > maxChars) {
+      flush();
+      let piece = '';
+      for (const sentence of sentencesOf(paragraph)) {
+        const next = piece ? `${piece} ${sentence}` : sentence;
+        if (next.length > maxChars && piece) {
+          chunks.push(piece);
+          piece = sentence;
+        } else {
+          piece = next;
+        }
+      }
+      if (piece.length >= minChars) chunks.push(piece.slice(0, maxChars * 2));
+      continue;
+    }
+    if (current && current.length + paragraph.length + 1 > maxChars) flush();
+    current = current ? `${current} ${paragraph}` : paragraph;
+  }
+  flush();
+  return chunks.slice(0, maxChunks);
 }
 
 const shorten = (s, max = 110) => {
@@ -301,14 +376,24 @@ export function checkDraft(
     });
   }
 
-  // A correction request is expected to quote the passage it disputes.
+  // A correction request is expected to quote the passage it disputes. Other
+  // drafts may quote a source, in quotation marks and word for word, but not
+  // reuse its sentences as their own.
   if (mode === 'grow') {
-    for (const overlap of verbatimOverlaps(body, facts.filter((f) => f.source === 'evidence'))) {
+    const published = facts.filter((f) => f.source === 'evidence' || f.source === 'page');
+    for (const overlap of verbatimOverlaps(withoutQuotes(body), published)) {
       issues.push({
         kind: 'verbatim',
         severity: 'block',
         fact_id: overlap.fact_id,
-        text: `Copies a run of words from ${overlap.fact_id}: “${overlap.excerpt}…”. Rewrite it in your own words.`,
+        text: `Copies a run of words from ${overlap.fact_id}: “${overlap.excerpt}…”. Rewrite it in your own words, or quote it with attribution.`,
+      });
+    }
+    for (const quote of unverifiedQuotes(body, facts)) {
+      issues.push({
+        kind: 'quote_unverified',
+        severity: 'block',
+        text: `Quotes words that are not in any source: “${shorten(quote)}”. Quotations must be copied exactly from a fact.`,
       });
     }
   }
@@ -388,6 +473,15 @@ export function outlineFor(format, { entityName = 'The client', grow = [] } = {}
       ];
     case 'social_post':
       return ['Opening line', ...labels.slice(0, 2).map((l) => `One or two sentences on ${l}`), 'Close'];
+    case 'source_analysis':
+      return [
+        `Headline: what the page announces, carrying ${entityName}${labels[0] ? ` and ${labels[0]}` : ''}`,
+        `Opening: the announcement in two sentences, naming ${entityName}`,
+        'What it means: analysis grounded in the page, in your own words',
+        ...labels.map((l) => `Context: ${entityName} and ${l}, from the wider sourced facts`),
+        'What to watch next, only where the facts support it',
+        'Source line: the original announcement, by name and link',
+      ];
     case 'correction_request':
       return [
         'To the editor: identify the article by headline, date and URL',

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 
 import {
   FORMATS, FORMAT_ORDER, strategyFor, strengthenStrategy, avoidTermsFor, usableAliases, checkDraft, targetCoverage,
-  verbatimOverlaps, outlineFor,
+  verbatimOverlaps, outlineFor, unverifiedQuotes, withoutQuotes, chunkPassages,
 } from '../src/services/content-checks.js';
 
 /**
@@ -158,4 +158,52 @@ test('unconfirmed placeholders block approval', () => {
   const result = checkDraft({ body: 'Contact: [CONFIRM: press office email]', claims: [] }, { avoid, facts });
   assert.equal(result.ok, false);
   assert.equal(result.issues[0].kind, 'placeholder');
+});
+
+// --- Analysis of a page ------------------------------------------------------
+
+const release = [
+  { id: 'S1', source: 'page', passage: 'Harbour Capital today announced that Jane Smith will lead its new infrastructure fund. “This fund reflects twenty years of work in public-private partnerships,” said Jane Smith.' },
+];
+
+test('an analysis is a recommended format whenever content can displace or strengthen', () => {
+  assert.equal(FORMATS.source_analysis.requiresSource, true);
+  assert.ok(strategyFor({ routes: [route('displace')] }).recommended.includes('source_analysis'));
+  assert.ok(strengthenStrategy({ association: { label: 'x' }, routes: [] }).recommended.includes('source_analysis'));
+  assert.ok(outlineFor('source_analysis', { entityName: 'Jane Smith', grow: [{ label: 'Harbour Capital' }] }).some((o) => /Source line/.test(o)));
+});
+
+test('a quotation copied exactly from the page passes; an invented or altered one blocks approval', () => {
+  assert.deepEqual(unverifiedQuotes('Smith said the fund “reflects twenty years of work in public-private partnerships.”', release), []);
+  assert.deepEqual(unverifiedQuotes('“This fund reflects twenty years … in public-private partnerships,” she said.', release), [],
+    'an elided quotation is checked piece by piece');
+  assert.equal(unverifiedQuotes('“This fund is the best in the country,” said Jane Smith.', release).length, 1);
+  assert.equal(unverifiedQuotes('“We are thrilled to lead this,” said Jane Smith [CONFIRM: quote approved by the client].', release).length, 0,
+    'a quote already marked for confirmation is left to the placeholder check');
+  assert.equal(unverifiedQuotes('She calls it a “new chapter”.', release).length, 0, 'short scare quotes are not quotations');
+
+  const invented = checkDraft({ body: 'An analyst said “this changes the infrastructure market completely”.', claims: [] }, { facts: release });
+  assert.ok(invented.issues.some((i) => i.kind === 'quote_unverified'));
+  assert.equal(invented.ok, false);
+});
+
+test('quoting the page is allowed; reusing its sentences as your own is not', () => {
+  const quoted = 'Jane Smith said “This fund reflects twenty years of work in public-private partnerships.”';
+  assert.equal(verbatimOverlaps(withoutQuotes(quoted), release).length, 0);
+  assert.equal(checkDraft({ body: quoted, claims: [{ sentence: quoted, fact_ids: ['S1'] }] }, { facts: release }).ok, true);
+
+  const lifted = 'Harbour Capital today announced that Jane Smith will lead its new infrastructure fund, a notable step.';
+  const result = checkDraft({ body: lifted, claims: [{ sentence: lifted, fact_ids: ['S1'] }] }, { facts: release });
+  assert.ok(result.issues.some((i) => i.kind === 'verbatim' && i.fact_id === 'S1'));
+});
+
+test('a page is split into citable passages without cutting sentences', () => {
+  const para = (n) => `Paragraph ${n} explains one part of the announcement in some detail, with enough words to count.`;
+  const text = [para(1), para(2), 'Home', para(3), `${'A long sentence about the fund and its goals. '.repeat(30)}`].join('\n\n');
+  const chunks = chunkPassages(text, { maxChars: 300 });
+  assert.ok(chunks.length >= 3);
+  assert.ok(chunks.every((c) => c.length <= 600));
+  assert.ok(chunks.every((c) => /[.!?]$/.test(c.trim()) || c.endsWith('Home')), 'passages end on a sentence');
+  assert.equal(chunkPassages(text, { maxChars: 300, maxChunks: 2 }).length, 2);
+  assert.deepEqual(chunkPassages(''), []);
 });

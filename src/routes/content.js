@@ -2,6 +2,7 @@ import { Router, ok, readJson } from '../http.js';
 import { requireAuth, audit } from '../auth.js';
 import { getEntity } from '../services/identity.js';
 import { contentBrief, createDraft, generateInto, getDraft, listDrafts, updateDraft } from '../services/content.js';
+import { readSource, listSources } from '../services/content-source.js';
 
 export const contentRoutes = new Router();
 
@@ -13,7 +14,23 @@ contentRoutes.get('/api/associations/:id/content-brief', (req, res, params, url)
     growIds: url.searchParams.has('grow') ? ids(url.searchParams.get('grow')) : null,
     sourceDocumentId: url.searchParams.get('document'),
     purpose: url.searchParams.get('purpose'),
+    sourceId: url.searchParams.get('source'),
   }));
+});
+
+contentRoutes.get('/api/entities/:id/content-sources', (req, res, params) => {
+  const entity = getEntity(Number(params.id));
+  ok(res, { sources: listSources(entity.id) });
+});
+
+// Reading a page can fall back to a billed DataForSEO call, so who asked is recorded.
+contentRoutes.post('/api/entities/:id/content-sources', async (req, res, params) => {
+  const user = requireAuth(req);
+  const entity = getEntity(Number(params.id));
+  const body = await readJson(req);
+  const source = await readSource(entity.id, body.url, user);
+  audit(user.id, 'content.read_source', { entity_id: entity.id, source_id: source.id, url: source.url });
+  ok(res, { source });
 });
 
 // Generation spends money, so who asked for it is recorded.
