@@ -9,6 +9,8 @@ import { AUDIT_CHECKS, AUDIT_RESULTS } from '/copy/metrics.js';
  */
 
 const RESULT_CLASS = { fail: 'bad', warn: 'warn', insufficient: '', pass: 'good', not_applicable: '' };
+// Missing facts and compliance approval are not a wording problem, so there is no AI button for them.
+const NOT_FIXED_BY_REWRITING = new Set(['C3', 'C5', 'C6']);
 const SOURCE_LABEL = { paste: 'Pasted text', url: 'Live page', generated: 'Generated draft' };
 const num = (v) => (v === null || v === undefined ? null : Number.isInteger(Number(v)) ? String(v) : Number(v).toFixed(1));
 
@@ -172,7 +174,7 @@ export function auditPanel(initial, { contentDraftId = null, llmAvailable = fals
 
   const aiButton = contentDraftId && llmAvailable
     ? (audit) => (check) => {
-        if (!['fail', 'warn'].includes(check.result) || check.signed_off) return null;
+        if (!['fail', 'warn'].includes(check.result) || check.signed_off || NOT_FIXED_BY_REWRITING.has(check.check_id)) return null;
         const button = h('button', { type: 'button', class: 'small ghost', title: 'A separate action: the AI revises the text and the audit runs again. You can undo it.' },
           check.result === 'fail' ? 'Fix with AI' : 'Check with AI');
         button.addEventListener('click', () => askAi(audit, { check_ids: [check.check_id] }, button));
@@ -213,7 +215,7 @@ export function auditPanel(initial, { contentDraftId = null, llmAvailable = fals
       else byGroup.passed.push(c);
     }
     const card = (c) => checkCard(c, { auditId: draft.id, refresh, aiButton: aiButton ? aiButton(audit) : null });
-    const fixAll = aiButton && checks.some((c) => c.result === 'fail' && !c.signed_off) && !running
+    const fixAll = aiButton && checks.some((c) => c.result === 'fail' && !c.signed_off && !NOT_FIXED_BY_REWRITING.has(c.check_id)) && !running
       ? (() => {
           const b = h('button', { type: 'button', class: 'small' }, 'Fix all failures with AI');
           b.addEventListener('click', () => askAi(audit, { all_blocking: true }, b));

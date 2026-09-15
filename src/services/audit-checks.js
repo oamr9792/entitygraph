@@ -10,6 +10,7 @@ import { fetchPublicPage } from './content-source.js';
 import {
   sentencesOf, countIndependent, highestClass, VERIFIABLE_CLASSES, candidatePersonNames, subjectShare, repetitionWaste,
   wasteSentence, attributionLoad, extractLinks, linkPlacement, hostFit, personSchema, regulatedProfile, numberWord,
+  unsupportedEvents, isLinked,
 } from './audit-rules.js';
 
 /**
@@ -89,10 +90,13 @@ async function c2(ctx) {
   const draft = ctx.contentDraft;
   const placeholders = draft ? (String(draft.body ?? '').match(/\[CONFIRM:[^\]]*\]/gi) ?? []) : [];
   const quotes = draft ? unverifiedQuotes(draft.body, draft.facts ?? []) : [];
+  // "Joins" on a profile of someone already in post reports an event nobody reported.
+  const events = draft ? unsupportedEvents(draft.title, draft.body, (draft.facts ?? []).map((f) => f.passage)) : [];
   const items = [
     ...unsupported.map((f) => `No source in the corpus holds “${f.extracted_claim}” (${String(f.relationship ?? '').replace(/_/g, ' ')}): “${f.sentence}”`),
     ...placeholders.map((p) => `Waiting to be confirmed: ${p}`),
     ...quotes.map((q) => `Quotes words no source contains: “${q}”`),
+    ...events.map((e) => `Reports an event no fact reports (“${e.verb}”): “${e.sentence}”. Describe the current role instead.`),
   ];
   const detail = {
     value: unsupported.length,
@@ -101,10 +105,11 @@ async function c2(ctx) {
     claims: claims.map((f) => ({ claim: f.extracted_claim, relationship: f.relationship, sentence: f.sentence, resolution: f.resolution, sources: f.sources })),
     placeholders,
     unverified_quotes: quotes,
+    unsupported_events: events,
     items,
   };
-  if (placeholders.length || quotes.length) {
-    return result('C2', 'fail', `${s(placeholders.length + quotes.length, 'statement')} cannot be stood behind${unsupported.length ? `, and ${unsupported.length} of ${claims.length} claims have no source` : ''}.`, detail);
+  if (placeholders.length || quotes.length || events.length) {
+    return result('C2', 'fail', `${s(placeholders.length + quotes.length + events.length, 'statement')} cannot be stood behind${unsupported.length ? `, and ${unsupported.length} of ${claims.length} claims have no source` : ''}.`, detail);
   }
   if (!claims.length) {
     return result('C2', 'insufficient', 'No claims about the client could be extracted from this text, so none could be checked.', detail);
@@ -145,69 +150,131 @@ function attributionsFor(ctx) {
     return doc ?? null;
   };
   if (ctx.contentDraft) {
+    // A source counts only if the reader can reach it: named but unlinked is an assertion, not an attribution.
     const facts = new Map((ctx.contentDraft.facts ?? []).map((f) => [f.id, f]));
     const out = [];
+    const unlinked = new Set();
     for (const claim of ctx.contentDraft.claims ?? []) {
       for (const id of claim.fact_ids ?? []) {
         const fact = facts.get(id);
         if (!fact || !['evidence', 'page'].includes(fact.source)) continue;
+        if (!isLinked(fact.url, ctx.links)) {
+          const domain = fact.domain ?? (fact.url ? rootDomain(fact.url) : null);
+          if (domain) unlinked.add(domain);
+          continue;
+        }
         const doc = lookup(fact.document_id, fact.url);
         out.push({ root_domain: doc?.root_domain ?? fact.domain ?? rootDomain(fact.url), duplicate_cluster_id: doc?.duplicate_cluster_id ?? null, owner_key: doc?.owner_key ?? null, cited: id });
       }
     }
-    return out;
+    return { list: out, unlinked: [...unlinked] };
   }
-  return ctx.links
+  const list = ctx.links
     .filter((l) => !ctx.ownDomains.some((d) => l.domain === d || l.domain.endsWith(`.${d}`)))
     .map((l) => {
       const doc = lookup(null, l.href);
       return { root_domain: doc?.root_domain ?? rootDomain(l.href), duplicate_cluster_id: doc?.duplicate_cluster_id ?? null, owner_key: doc?.owner_key ?? null, cited: l.href };
     });
+  return { list, unlinked: [] };
 }
 
 function c4(ctx) {
-  const counted = countIndependent(attributionsFor(ctx));
-  const detail = { value: counted.independent, denominator: counted.attributions, clusters: counted.clusters };
-  const line = `${s(counted.attributions, 'attribution')} across ${s(counted.independent, 'independent source')}`;
-  if (!counted.attributions) return result('C4', 'warn', 'Cites no sources at all.', { ...detail, items: ['Attribute the facts to the sources that establish them.'] });
+  const { list, unlinked } = attributionsFor(ctx);
+  const counted = countIndependent(list);
+  const detail = { value: counted.independent, denominator: counted.attributions, clusters: counted.clusters, unlinked_sources: unlinked };
+  const unlinkedItems = unlinked.map((d) => `Relies on ${d} without linking it. Link it so the reader can reach the source.`);
+  const line = `${s(counted.attributions, 'linked attribution')} across ${s(counted.independent, 'independent source')}`;
+  if (!counted.attributions) {
+    return unlinked.length
+      ? result('C4', 'warn', `Relies on ${s(unlinked.length, 'source')} but links none of them, so nothing it asserts can be checked.`, { ...detail, items: unlinkedItems })
+      : result('C4', 'warn', 'Cites no sources at all.', { ...detail, items: ['Attribute the facts to the sources that establish them.'] });
+  }
   if (counted.independent === 1) {
     return result('C4', 'fail', `${line}. Everything rests on ${counted.clusters[0].label}: this is a restatement.`,
-      { ...detail, items: [`All attributions go to ${counted.clusters[0].label}.`] });
+      { ...detail, items: [`All linked attributions go to ${counted.clusters[0].label}.`, ...unlinkedItems] });
   }
   if (counted.independent < A().sources.minIndependent) {
-    return result('C4', 'warn', `${line}, fewer than ${A().sources.minIndependent}.`, { ...detail, items: counted.clusters.map((c) => `${c.label}: ${s(c.attributions, 'attribution')}`) });
+    return result('C4', 'warn', `${line}, fewer than ${A().sources.minIndependent}.`, { ...detail, items: [...counted.clusters.map((c) => `${c.label}: ${s(c.attributions, 'attribution')}`), ...unlinkedItems] });
   }
+  if (unlinked.length) return result('C4', 'warn', `${line}, but ${s(unlinked.length, 'source')} used without a link.`, { ...detail, items: unlinkedItems });
   return result('C4', 'pass', `${line}.`, detail);
+}
+
+const resolvedIn = (draftIds) => new Set(draftIds.length
+  ? all(
+      `SELECT DISTINCT association_id FROM audit_draft_fact WHERE resolution = 'resolved' AND association_id IS NOT NULL
+         AND draft_id IN (${draftIds.map(() => '?').join(',')})`,
+      ...draftIds
+    ).map((r) => r.association_id)
+  : []);
+
+/** How many revisions of this draft in a row added no fact the earlier versions lacked. */
+function revisionsWithoutNewFacts(ctx) {
+  if (!ctx.draft.content_draft_id) return 0;
+  const versions = [];
+  for (const row of all(
+    `SELECT id, text_hash FROM audit_draft WHERE content_draft_id = ? AND status = 'done' AND id < ? ORDER BY id DESC LIMIT 12`,
+    ctx.draft.content_draft_id,
+    ctx.draft.id
+  )) {
+    // Re-audits of unchanged text are not revisions.
+    if (row.text_hash === ctx.draft.text_hash || versions.at(-1)?.text_hash === row.text_hash) continue;
+    versions.push(row);
+  }
+  const chain = [new Set(resolved(ctx).map((f) => f.association_id)), ...versions.map((v) => resolvedIn([v.id]))];
+  let streak = 0;
+  for (let i = 0; i < chain.length - 1; i += 1) {
+    const earlier = new Set(chain.slice(i + 1).flatMap((set) => [...set]));
+    if ([...chain[i]].some((id) => !earlier.has(id))) break;
+    streak += 1;
+  }
+  return streak;
 }
 
 function c5(ctx) {
   const facts = uniqueBy(resolved(ctx), (f) => f.association_id);
   const audited = ctx.liveAssets.filter((a) => a.latest_audit_id);
-  const onAssets = new Set(audited.length
-    ? all(
-        `SELECT DISTINCT association_id FROM audit_draft_fact WHERE resolution = 'resolved' AND association_id IS NOT NULL
-           AND draft_id IN (${audited.map(() => '?').join(',')})`,
-        ...audited.map((a) => a.latest_audit_id)
-      ).map((r) => r.association_id)
-    : []);
-  const novel = facts.filter((f) => !onAssets.has(f.association_id) && f.independent_sources >= A().novelty.minClustersPerFact);
+  const onAssets = resolvedIn(audited.map((a) => a.latest_audit_id));
+  // The client's other drafts count too: a fact already written up elsewhere is not new because it is written again.
+  const otherDrafts = all(
+    `SELECT MAX(a.id) AS id FROM audit_draft a JOIN content_drafts c ON c.id = a.content_draft_id
+      WHERE a.entity_id = ? AND a.status = 'done' AND c.status != 'archived' AND a.content_draft_id != ?
+      GROUP BY a.content_draft_id`,
+    ctx.entity.id,
+    ctx.draft.content_draft_id ?? -1
+  ).map((r) => r.id);
+  const inDrafts = resolvedIn(otherDrafts);
+  const known = (id) => onAssets.has(id) || inDrafts.has(id);
+  const novel = facts.filter((f) => !known(f.association_id) && f.independent_sources >= A().novelty.minClustersPerFact);
+  const streak = revisionsWithoutNewFacts(ctx);
   const detail = {
     value: novel.length,
     denominator: facts.length,
     novel_association_ids: novel.map((f) => f.association_id),
     live_assets: ctx.liveAssets.length,
     audited_assets: audited.length,
+    other_drafts: otherDrafts.length,
+    revisions_without_new_facts: streak,
     already_on_assets: facts.filter((f) => onAssets.has(f.association_id)).map((f) => f.extracted_claim),
+    already_in_drafts: facts.filter((f) => !onAssets.has(f.association_id) && inDrafts.has(f.association_id)).map((f) => f.extracted_claim),
     single_source: facts.filter((f) => f.independent_sources < A().novelty.minClustersPerFact).map((f) => f.extracted_claim),
     items: novel.map((f) => `New to your network: ${f.extracted_claim}`),
   };
-  if (!facts.length) return result('C5', 'insufficient', 'No supported facts to compare with your live assets.', detail);
+  if (!facts.length) return result('C5', 'insufficient', 'No supported facts to compare with your live assets and other drafts.', detail);
   const note = ctx.liveAssets.length > audited.length ? ` ${ctx.liveAssets.length - audited.length} of ${ctx.liveAssets.length} live assets have not been audited, so their facts are not counted.` : '';
   if (novel.length < A().novelty.minNovelFacts) {
-    return result('C5', 'warn', `0 of ${facts.length} supported facts are new. This piece adds a URL and nothing else.${note}`,
-      { ...detail, items: ['Every supported fact is already on a live asset or rests on a single source.'] });
+    const stuck = streak
+      ? ` Neither did the last ${s(streak, 'revision')}: rewriting does not add facts. Gather new ones before another draft.`
+      : '';
+    return result('C5', 'warn', `0 of ${facts.length} supported facts are new. This piece adds a URL and nothing else.${stuck}${note}`, {
+      ...detail,
+      items: [
+        'Every supported fact is already on a live asset, in another draft, or rests on a single source.',
+        ...(streak ? ['Stop revising. Get facts that are not yet written up anywhere — a register record, dates, prior roles, education — then draft again.'] : []),
+      ],
+    });
   }
-  return result('C5', 'pass', `${novel.length} of ${facts.length} supported facts are new to your live assets and independently sourced.${note}`, detail);
+  return result('C5', 'pass', `${novel.length} of ${facts.length} supported facts are new to your live assets and other drafts, and independently sourced.${note}`, detail);
 }
 
 function c6(ctx) {
@@ -222,10 +289,17 @@ function c6(ctx) {
     by_class: classified.reduce((acc, c) => ({ ...acc, [c.class]: (acc[c.class] ?? 0) + 1 }), {}),
     facts: classified,
   };
-  if (facts.length < A().verifiability.minFacts) return result('C6', 'insufficient', `Only ${s(facts.length, 'supported fact')}, too few for a share to mean anything.`, detail);
+  // A regulated person has a public register record: the most checkable facts there are.
+  const regulated = regulatedProfile(ctx.profile.markers ?? []);
+  const registerItems = regulated.registrations.length || regulated.occupation_hints.length
+    ? ['Add the regulator’s public record to the corpus. For a US financial adviser that is FINRA BrokerCheck: CRD number, firms and dates, exams, state registrations, disclosures.']
+    : [];
+  if (facts.length < A().verifiability.minFacts) {
+    return result('C6', 'insufficient', `Only ${s(facts.length, 'supported fact')}, too few for a share to mean anything.`, { ...detail, items: registerItems });
+  }
   return share < A().verifiability.minShare
     ? result('C6', 'warn', `${verifiable.length} of ${facts.length} facts (${pct(share)}) are backed by a register, professional body or institution; the rest rest on press or the client’s own pages.`,
-        { ...detail, items: classified.filter((c) => !VERIFIABLE_CLASSES.has(c.class)).map((c) => `${c.claim}: best source is ${c.class.replace(/_/g, ' ')}`) })
+        { ...detail, items: [...classified.filter((c) => !VERIFIABLE_CLASSES.has(c.class)).map((c) => `${c.claim}: best source is ${c.class.replace(/_/g, ' ')}`), ...registerItems] })
     : result('C6', 'pass', `${verifiable.length} of ${facts.length} facts (${pct(share)}) are backed by a register, professional body or institution.`, detail);
 }
 

@@ -4,13 +4,35 @@ import assert from 'node:assert/strict';
 import {
   countIndependent, sourceClassFor, highestClass, candidatePersonNames, subjectShare, repetitionWaste, wasteSentence,
   attributionLoad, extractLinks, linkPlacement, hostFit, personSchema, regulatedProfile, signoffRule, groupChecks,
-  summarySentence,
+  summarySentence, unsupportedEvents, isLinked,
 } from '../src/services/audit-rules.js';
 
 /**
  * §99 — the audit's rules on their own, using the kind of text the checks were
  * written for: an advisor profile that spends two paragraphs on colleagues.
  */
+
+test('C2 catches a news verb in the headline that no fact reports', () => {
+  const profile = ['Solomon Tobal is a Financial Advisor with the Fischman Azar Group, operating through Wells Fargo Advisors.'];
+  const events = unsupportedEvents(
+    'Solomon Tobal Joins Fischman Azar Group as Financial Advisor at Wells Fargo Advisors',
+    '*A recent profile details his practice.*\n\nTobal works with clients in Fort Lee.',
+    profile
+  );
+  assert.equal(events.length, 1);
+  assert.equal(events[0].verb, 'Joins');
+  assert.deepEqual(unsupportedEvents('Solomon Tobal Joins Fischman Azar Group', '', ['In March 2024 Tobal joined the Fischman Azar Group.']), []);
+  assert.deepEqual(unsupportedEvents('Solomon Tobal, Financial Advisor with the Fischman Azar Group', 'Tobal works with clients.', profile), []);
+  assert.equal(unsupportedEvents('', '# Tobal named to lead the team\n\nHe works in Fort Lee.', profile).length, 1, 'a Markdown H1 is the headline');
+});
+
+test('C4 treats a source as cited only when the text links it', () => {
+  const links = extractLinks({ text: 'As [OCNJ Daily](https://www.ocnjdaily.com/solomon-tobal/) reported, Tobal advises clients.' });
+  assert.equal(isLinked('https://ocnjdaily.com/solomon-tobal', links), true);
+  assert.equal(isLinked('https://ocnjdaily.com/another-page', links), true, 'another page on the same site');
+  assert.equal(isLinked('https://www.wellsfargoadvisors.com/fa/tobal', links), false, 'named in prose, not linked');
+  assert.equal(isLinked(null, links), false);
+});
 
 test('C4 counts syndicated copies, same-site pages and shared owners as one source each', () => {
   const result = countIndependent([

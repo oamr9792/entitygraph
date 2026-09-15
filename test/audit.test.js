@@ -153,3 +153,50 @@ test('§99 marking an association adverse makes naming it a blocking failure tha
   assert.equal(check(getAudit(id), 'C11').signed_off, false);
   assert.equal(check(getAudit(id), 'C11').stale, true);
 });
+
+test('§99 a generated draft: an unreported "joins", unlinked sources, and revisions that add no facts', async () => {
+  MODEL.audit.minCoverageLevel = 'LOW';
+  const association = get(`SELECT id FROM associations WHERE entity_id = ? AND canonical_label = 'ABC Capital'`, entityId);
+  const doc = get(`SELECT id, url, root_domain FROM documents WHERE url = 'https://ft.com/b'`);
+  const facts = [{
+    id: 'F1', source: 'evidence', association_id: association.id, url: doc.url, domain: doc.root_domain, document_id: doc.id,
+    passage: 'John Smith, founder of ABC Capital, has increased his charitable giving. The New York investor donated to the XYZ Foundation.',
+  }];
+  const draft = (title, body) => {
+    const sentence = body.split('\n\n').find((p) => p.includes('founder'));
+    const res = run(
+      `INSERT INTO content_drafts (entity_id, association_id, format, mode, title, body, claims, brief) VALUES (?, ?, 'article', 'grow', ?, ?, ?, ?)`,
+      entityId, association.id, title, body, JSON.stringify([{ sentence, fact_ids: ['F1'] }]), JSON.stringify({ purpose: 'strengthen', facts })
+    );
+    return Number(res.lastInsertRowid);
+  };
+  const audit = async (contentDraftId, title, body) => {
+    run(`UPDATE content_drafts SET title = ?, body = ? WHERE id = ?`, title, body, contentDraftId);
+    return runAudit(createAuditDraft({ entityId, sourceKind: 'generated', text: `${title}\n\n${body}`, title, contentDraftId }));
+  };
+  const BODY = 'John Smith, founder of ABC Capital, gives to arts education in New York, as the Financial Times reported.\n\nJohn Smith leads ABC Capital from New York and supports the XYZ Foundation.';
+
+  // An earlier piece already carries these facts.
+  const earlier = draft('John Smith of ABC Capital', BODY);
+  await audit(earlier, 'John Smith of ABC Capital', BODY);
+
+  const id = draft('John Smith Joins ABC Capital', BODY);
+  const first = await audit(id, 'John Smith Joins ABC Capital', BODY);
+  const c2 = check(first, 'C2');
+  assert.equal(c2.result, 'fail');
+  assert.ok(c2.detail.items.some((i) => /“Joins”/.test(i)), c2.summary);
+  const c4 = check(first, 'C4');
+  assert.equal(c4.result, 'warn');
+  assert.deepEqual(c4.detail.unlinked_sources, ['ft.com']);
+  assert.equal(check(first, 'C5').result, 'warn', 'every fact is already in the earlier draft');
+  assert.equal(check(first, 'C5').detail.revisions_without_new_facts, 0);
+
+  // Reworded and linked, but the same facts.
+  const LINKED = BODY.replace('the Financial Times reported', '[the Financial Times](https://ft.com/b) reported');
+  const second = await audit(id, 'John Smith, founder of ABC Capital', LINKED);
+  assert.notEqual(check(second, 'C2').result, 'fail', check(second, 'C2').summary);
+  assert.deepEqual(check(second, 'C4').detail.unlinked_sources, []);
+  const c5 = check(second, 'C5');
+  assert.equal(c5.detail.revisions_without_new_facts, 1);
+  assert.match(c5.summary, /rewriting does not add facts/);
+});

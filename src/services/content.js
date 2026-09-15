@@ -172,6 +172,7 @@ export function contentBrief(associationId, { format = null, growIds = null, sou
     targets,
     optimisation: mode === 'grow' ? optimisationRules() : [],
     mention_cap: MODEL.mentionCap.length,
+    client_urls: (profile.known_urls ?? []).map((u) => (/^https?:\/\//i.test(u) ? u : `https://${u}`)),
     target_documents: targetDocuments,
     source_document_id: sourceDocument?.document_id ?? null,
     source: sourceSummary(source),
@@ -461,6 +462,15 @@ const DRAFT_SCHEMA = {
   },
 };
 
+// What reviewers of generated drafts kept flagging, as rules for every piece that carries associations.
+const WRITING_RULES = `Also, for every piece:
+- Link what you rely on. Each evidence or original-article fact comes with its URL: link the publication's name, or the words carrying the fact, as an inline Markdown link to that URL. A quotation is always linked to its source. Never name a source without linking it.
+- If CLIENT'S OWN SITE is given, link it once in the body text, within the first third of the piece.
+- Roles and affiliations go in the present tense, as the facts state them. Never write that the client joins, joined, was appointed, named, hired or promoted, or launched or announced anything, unless a fact reports that event. A profile of someone in a role is not news that they took it.
+- Other named people get one clause each: name and role. Do not describe their specialisms, clients or work — every sentence about them is evidence about them, not about the client.
+- No phrase, whether an association or a descriptor such as a specialism, more than three times in the piece.
+- Lead with the most specific, checkable facts — registrations, dates, prior firms, education — before general description. Do not pad thin facts with interpretation; if the facts are thin, say what is missing in notes_for_editor.`;
+
 const GROW_SYSTEM = `You draft reputation-management content for a named client of a communications firm. A person reviews every draft before anything is published.
 
 Rules, in order of importance:
@@ -471,7 +481,9 @@ Rules, in order of importance:
 5. Write as the client or their organisation. Never present the piece as independent journalism, a review, a testimonial, or the words of anyone other than the client, and never invent quotes. Any quote from the client must be followed by [CONFIRM: quote approved by the client].
 6. No superlatives, rankings, awards or figures unless a fact states them.
 7. Carry the MAIN ASSOCIATION and everything under ALSO CARRY. State the main one directly beside the client's name, in the title or opening paragraph, two or three times in total — never more than three. Work each of the others in with one or two direct sentences that name the client, woven into the piece rather than listed. Rule 1 still applies: only relationships the facts support.
-Keep to the requested length. Plain, specific, factual prose.`;
+Keep to the requested length. Plain, specific, factual prose.
+
+${WRITING_RULES}`;
 
 const CORRECT_SYSTEM = `You draft a correction request from a client, or their representative, to the editor of one publication. A person reviews it before it is sent.
 
@@ -499,7 +511,9 @@ Rules, in order of importance:
 7. Never mention, or allude to, any term listed under NEVER MENTION.
 8. No superlatives, rankings, predictions or figures unless a fact states them.
 9. Associations: put the MAIN ASSOCIATION in the headline or first paragraph, stated directly beside the client's name, two or three times in total — never more than three. Work each ALSO CARRY association into the narrative in one or two direct sentences that name the client — never as a list, and never as a section per association. Rule 1 still applies: leave out any the facts do not support, and say which in notes_for_editor.
-Keep to the requested length.`;
+Keep to the requested length.
+
+${WRITING_RULES}`;
 
 function promptFor(brief, notes) {
   const format = FORMATS[brief.format];
@@ -508,6 +522,7 @@ function promptFor(brief, notes) {
     `CLIENT NAMES: ${(brief.names ?? []).join('; ')}`,
     `FORMAT: ${format.label} — ${format.length}. Destination: ${format.where}`,
   ];
+  if (brief.client_urls?.length) lines.push(`CLIENT'S OWN SITE: ${brief.client_urls.join('; ')}`);
   if (brief.source) {
     const title = brief.source.title ? `"${brief.source.title}"` : '(title unknown — refer to the publication by name)';
     lines.push(`ORIGINAL ARTICLE: ${title} — ${brief.source.final_url}, published on ${brief.source.domain ?? 'the web'}`);
@@ -532,9 +547,13 @@ function promptFor(brief, notes) {
   }
   lines.push('', 'OUTLINE:', ...brief.outline.map((o) => `- ${o}`), '', 'FACTS:');
   for (const fact of brief.facts) {
+    // URLs are given so the piece can link what it relies on.
+    const date = fact.date ? String(fact.date).slice(0, 10) : 'undated';
     const source = fact.source === 'evidence'
-      ? ` (${fact.domain ?? 'source'}, ${fact.date ? String(fact.date).slice(0, 10) : 'undated'})`
-      : ' (client identity profile)';
+      ? ` (${fact.domain ?? 'source'}, ${date}${fact.url ? `, ${fact.url}` : ''})`
+      : fact.source === 'page'
+        ? ` (the original article${fact.url ? `, ${fact.url}` : ''})`
+        : ' (client identity profile)';
     lines.push(`[${fact.id}]${source} ${fact.passage}`);
   }
   if (notes) lines.push(`[N1] (${brief.mode === 'grow' ? 'notes from the client’s team' : 'CLIENT NOTES'}) ${notes}`);
@@ -814,10 +833,16 @@ How to revise:
 - Copied words: tell that passage in your own words, or quote a short part of it word for word with attribution. Never leave a run of the source's words unquoted.
 - A repeated association: keep the first two or three direct mentions and replace later ones with a pronoun or a natural rewording — never with a different association.
 - A missing or buried association: add or move one direct sentence that names the client, supported by the facts.
+- A source used without a link: link it inline, using the URL given with its fact.
+- An event the facts do not report ("joins", "appointed"): restate it as the current role, in the present tense, in the headline and everywhere else.
+- Too much about other people: cut them to a name and role each.
 - Resolving one issue must not create another. Every rule below still applies in full.
 - Return the complete revised title and body, and the complete claims list for the revised body (every factual sentence, with the ids of the facts that support it). Say whether you changed anything, and explain in one or two sentences what you changed or why no change was needed.
 
 The draft's original rules follow.`;
+
+// No new facts, nothing verifiable, a compliance approval: rewording cannot supply any of these, and trying hides the problem.
+export const NOT_FIXED_BY_REWRITING = ['C3', 'C5', 'C6'];
 
 const FIX_SCHEMA = {
   type: 'object',
@@ -850,9 +875,13 @@ export async function fixDraft(id, { check_ids: checkIds = [], all_blocking: all
     throw new HttpError('The text changed since the last audit. Audit it again first.', 409);
   }
   if (audit.draft.status !== 'done') throw badRequest('The audit has not finished yet.');
-  const open = audit.checks.filter((c) => ['fail', 'warn'].includes(c.result) && !c.signed_off);
+  const open = audit.checks.filter((c) => ['fail', 'warn'].includes(c.result) && !c.signed_off && !NOT_FIXED_BY_REWRITING.includes(c.check_id));
+  const refused = checkIds.filter((id) => NOT_FIXED_BY_REWRITING.includes(id));
+  if (refused.length) {
+    throw badRequest(`${refused.join(', ')} cannot be fixed by rewriting: the draft needs new facts or a person’s approval, not new wording.`);
+  }
   const chosen = allBlocking ? open.filter((c) => c.result === 'fail') : open.filter((c) => checkIds.includes(c.check_id));
-  if (!chosen.length) throw badRequest(allBlocking ? 'Nothing is failing.' : 'Choose a check to fix.');
+  if (!chosen.length) throw badRequest(allBlocking ? 'Nothing is failing that rewriting can fix.' : 'Choose a check to fix.');
   const picked = {
     issues: chosen.flatMap((c) => [
       { severity: c.result === 'fail' ? 'block' : 'warn', text: `${c.copy.name}: ${c.summary}` },

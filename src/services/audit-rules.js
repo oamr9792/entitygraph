@@ -319,6 +319,56 @@ export function regulatedProfile(markers = [], rules = cfg().regulated) {
   };
 }
 
+// --- C2 and C4: events and links in generated text ---------------------------------------------------------------
+
+// News verbs. A profile of someone in a role is not a report that they just took it.
+const EVENT_PATTERNS = [
+  { stem: 'join', re: /\b(?:joins|joined|joining)\b/i },
+  { stem: 'appoint', re: /\b(?:appoints|appointed)\b/i },
+  { stem: 'hire', re: /\b(?:hires|hired)\b/i },
+  { stem: 'promot', re: /\b(?:promotes|promoted)\b/i },
+  { stem: 'launch', re: /\b(?:launches|launched)\b/i },
+  { stem: 'announc', re: /\b(?:announces|announced)\b/i },
+  { stem: 'welcom', re: /\b(?:welcomes|welcomed)\b/i },
+  { stem: 'named', re: /\b(?:named (?:as|to)|has been named)\b/i },
+];
+
+/**
+ * Event verbs in the headline or opening that no fact reports. The opening is
+ * the first two paragraphs (standfirst and first paragraph); a Markdown H1
+ * counts as the headline.
+ */
+export function unsupportedEvents(title, body, passages = []) {
+  const paragraphs = String(body ?? '').split(/\n\s*\n/).map((p) => p.trim()).filter(Boolean);
+  const headings = paragraphs.filter((p) => /^#\s/.test(p)).map((p) => ({ text: p.replace(/^#\s+/, '') }));
+  const opening = paragraphs.filter((p) => !/^#{1,6}\s/.test(p)).slice(0, 2).flatMap((p) => sentencesOf(p));
+  const places = [...(title ? [{ text: String(title) }] : []), ...headings, ...opening];
+  const support = passages.filter(Boolean).join('\n');
+  const out = new Map();
+  for (const place of places) {
+    for (const event of EVENT_PATTERNS) {
+      const match = place.text.match(event.re);
+      if (match && !new RegExp(`\\b${event.stem}`, 'i').test(support)) {
+        out.set(`${match[0].toLowerCase()}|${place.text}`, { verb: match[0], sentence: place.text.trim() });
+      }
+    }
+  }
+  return [...out.values()];
+}
+
+const bareUrl = (u) => String(u ?? '').trim().replace(/^https?:\/\//i, '').replace(/^www\./i, '').replace(/[?#].*$/, '').replace(/\/+$/, '').toLowerCase();
+
+/** Whether a source is linked from the text: the same page, or another page on the same site. */
+export function isLinked(url, links = []) {
+  if (!url) return false;
+  const target = bareUrl(url);
+  const host = target.split('/')[0];
+  return links.some((l) => {
+    const href = bareUrl(l.href);
+    return href === target || href.split('/')[0] === host;
+  });
+}
+
 // --- §101: sign-off and presentation ---------------------------------------------------------------------------
 
 export function signoffRule(checkId, result, rules = cfg()) {
