@@ -166,7 +166,10 @@ analysisRoutes.post('/api/entities/:id/serp', async (req, res, params) => {
     depth: body.depth ?? 100,
     location: body.location,
     language: body.language,
-    force: body.force,
+    // "Capture Google results now" means now. Without force the provider cache
+    // can return a page fetched up to a day earlier, stored under a new
+    // capture time as if it were fresh.
+    force: body.force ?? true,
   });
   const classified = await classifySnapshot(entity.id, snapshot.snapshot_id, { useLlm: body.use_llm !== false });
   ok(res, { snapshot, classified, overlay: retrievalOverlay(entity.id) });

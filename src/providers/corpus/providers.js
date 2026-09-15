@@ -1,5 +1,5 @@
 import config from '../../config.js';
-import { registerProvider } from './index.js';
+import { registerProvider, normaliseCandidate } from './index.js';
 import * as dfs from '../dataforseo.js';
 import { request } from '../http-client.js';
 import { canonicaliseUrl, rootDomain } from '../../util/hash.js';
@@ -63,20 +63,33 @@ export const GoogleSERPProvider = registerProvider({
       force: options.force,
     });
     return {
-      items: serp.results.map((r) => ({
-        url: r.url,
-        root_domain: r.root_domain,
-        title: r.title,
-        snippet: r.description,
-        provider: 'google_serp',
-        provider_ref: `rank:${r.rank}`,
-      })),
+      items: serpCandidates(serp),
       total_count: serp.results.length,
       stop_reason: 'exhausted',
       provider: 'google_serp',
     };
   },
 });
+
+/**
+ * A Google results page as document candidates, one per organic result.
+ *
+ * `provider_ref` records the organic position at the capture that first created
+ * the document. It is provenance, not a live rank: an existing document keeps
+ * the tag it was created with, so ranks are always read from a stored snapshot.
+ */
+export function serpCandidates(serp) {
+  return (serp?.results ?? [])
+    .map((r) => normaliseCandidate({
+      url: r.url,
+      root_domain: r.root_domain,
+      title: r.title,
+      snippet: r.description,
+      provider: 'google_serp',
+      provider_ref: `rank:${r.rank}`,
+    }, 'google_serp'))
+    .filter(Boolean);
+}
 
 // --- Common Crawl -----------------------------------------------------------
 

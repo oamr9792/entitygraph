@@ -29,9 +29,16 @@ export const cacheKey = (provider, payload) =>
   `${provider}:${crypto.createHash('sha256').update(JSON.stringify(payload)).digest('hex').slice(0, 40)}`;
 
 export function cacheGet(key) {
-  const row = get(`SELECT * FROM api_cache WHERE cache_key = ?`, key);
+  // Expiry is compared inside SQLite. expires_at is UTC text with no zone
+  // marker ("2026-09-15 13:20:00"), which new Date() reads as local time — on a
+  // machine ahead of UTC every entry expired that many hours early, and an entry
+  // written with a TTL under the offset was treated as expired on arrival.
+  const row = get(
+    `SELECT *, (expires_at IS NOT NULL AND expires_at <= datetime('now')) AS expired FROM api_cache WHERE cache_key = ?`,
+    key
+  );
   if (!row) return null;
-  if (row.expires_at && new Date(row.expires_at) < new Date()) {
+  if (row.expired) {
     run(`DELETE FROM api_cache WHERE cache_key = ?`, key);
     return null;
   }

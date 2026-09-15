@@ -20,7 +20,7 @@ import { llmJson, getLlm } from '../providers/llm/index.js';
 
 export async function captureEntitySerp(entityId, query, { depth = 100, location = 'United States', language = 'en', jobId = null, force = false } = {}) {
   const serp = await dfs.serpOrganic(query, { depth, location, language, entityId, jobId, force });
-  return storeSnapshot(entityId, serp, { queryKind: 'entity' });
+  return storeSerpSnapshot(entityId, serp, { queryKind: 'entity' });
 }
 
 export async function captureAssociationSerp(entityId, associationId, query, opts = {}) {
@@ -32,10 +32,11 @@ export async function captureAssociationSerp(entityId, associationId, query, opt
     jobId: opts.jobId,
     force: opts.force,
   });
-  return storeSnapshot(entityId, serp, { queryKind: 'association', associationId });
+  return storeSerpSnapshot(entityId, serp, { queryKind: 'association', associationId });
 }
 
-function storeSnapshot(entityId, serp, { queryKind, associationId = null }) {
+/** Stores one captured results page. `serp` is what dfs.serpOrganic returns. */
+export function storeSerpSnapshot(entityId, serp, { queryKind = 'entity', associationId = null } = {}) {
   return tx(() => {
     const res = run(
       `INSERT INTO serp_snapshots (entity_id, query, query_kind, association_id, location, language, device, depth, item_types, signals)
@@ -63,10 +64,11 @@ function storeSnapshot(entityId, serp, { queryKind, associationId = null }) {
       const canonical = canonicaliseUrl(r.url);
       const doc = get(`SELECT id FROM documents WHERE canonical_url = ? OR url = ?`, canonical, r.url);
       run(
-        `INSERT INTO serp_results (snapshot_id, rank, url, root_domain, title, description, document_id)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO serp_results (snapshot_id, rank, rank_absolute, url, root_domain, title, description, document_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
         snapshotId,
         r.rank,
+        r.rank_absolute ?? r.rank,
         r.url,
         r.root_domain ?? rootDomain(r.url),
         r.title,
@@ -76,6 +78,72 @@ function storeSnapshot(entityId, serp, { queryKind, associationId = null }) {
     }
     return { snapshot_id: snapshotId, results: serp.results.length, knowledge_graph: Boolean(serp.knowledge_graph) };
   });
+}
+
+/**
+ * Links a snapshot's results to documents created after it was stored. A build
+ * stores Google's page before ingesting the documents on it, so at insert time
+ * only documents from earlier builds could be linked. Returns how many were.
+ */
+export function linkSnapshotDocuments(snapshotId) {
+  if (!snapshotId) return 0;
+  let linked = 0;
+  for (const r of all(`SELECT id, url FROM serp_results WHERE snapshot_id = ? AND document_id IS NULL`, snapshotId)) {
+    const doc = get(`SELECT id FROM documents WHERE url = ? OR canonical_url = ?`, r.url, canonicaliseUrl(r.url));
+    if (!doc) continue;
+    run(`UPDATE serp_results SET document_id = ? WHERE id = ?`, doc.id, r.id);
+    linked += 1;
+  }
+  return linked;
+}
+
+/** Organic position by document for one snapshot: the best position when a document appears twice. */
+export function snapshotRanks(snapshotId) {
+  if (!snapshotId) return new Map();
+  return new Map(
+    all(
+      `SELECT document_id, MIN(rank) AS rank FROM serp_results
+        WHERE snapshot_id = ? AND document_id IS NOT NULL GROUP BY document_id`,
+      snapshotId
+    ).map((r) => [r.document_id, r.rank])
+  );
+}
+
+export const latestEntitySnapshotId = (entityId) =>
+  get(
+    `SELECT id FROM serp_snapshots WHERE entity_id = ? AND query_kind = 'entity'
+      ORDER BY captured_at DESC, id DESC LIMIT 1`,
+    entityId
+  )?.id ?? null;
+
+/**
+ * Snapshots stored before rank meant organic position recorded the absolute
+ * on-page position, which also counts knowledge panels and People Also Ask
+ * boxes. serp_results only ever held organic results, so their order by that
+ * position IS the organic order: renumbering it 1..N recovers organic position
+ * exactly, and the old value is kept as rank_absolute. Only rows with no
+ * rank_absolute are touched, so running it again changes nothing.
+ */
+export function renumberLegacySerpRanks() {
+  const snapshots = all(`SELECT DISTINCT snapshot_id FROM serp_results WHERE rank_absolute IS NULL`).map((r) => r.snapshot_id);
+  if (!snapshots.length) return 0;
+  tx(() => {
+    for (const snapshotId of snapshots) {
+      const rows = all(
+        `SELECT id, rank FROM serp_results WHERE snapshot_id = ? ORDER BY COALESCE(rank_absolute, rank), id`,
+        snapshotId
+      );
+      rows.forEach((row, index) => {
+        run(
+          `UPDATE serp_results SET rank = ?, rank_absolute = COALESCE(rank_absolute, ?) WHERE id = ?`,
+          index + 1,
+          row.rank,
+          row.id
+        );
+      });
+    }
+  });
+  return snapshots.length;
 }
 
 /**

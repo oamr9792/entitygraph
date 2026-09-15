@@ -3,6 +3,7 @@ import config, { SCORE_DISCLAIMER } from './src/config.js';
 import { installTrustStore } from './src/tls-trust.js';
 import { Router, fail, json, serveStatic, serveIndex } from './src/http.js';
 import { recoverOrphanedJobs } from './src/jobs/queue.js';
+import { renumberLegacySerpRanks } from './src/services/serp.js';
 import { llmStatus } from './src/providers/llm/index.js';
 import * as dfs from './src/providers/dataforseo.js';
 
@@ -96,6 +97,8 @@ server.listen(config.port, config.host, () => {
   reportBootstrap(bootstrapFirstUser());
   const recovered = recoverOrphanedJobs();
   if (recovered) console.log(`  [jobs] marked ${recovered} interrupted job(s) as failed`);
+  const renumbered = renumberLegacySerpRanks();
+  if (renumbered) console.log(`  [serp] renumbered ${renumbered} earlier Google snapshot(s) to organic positions`);
 });
 
 const shutdown = (signal) => {

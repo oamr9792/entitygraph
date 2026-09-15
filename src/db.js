@@ -336,7 +336,10 @@ CREATE INDEX IF NOT EXISTS idx_serp_entity ON serp_snapshots(entity_id, captured
 CREATE TABLE IF NOT EXISTS serp_results (
   id           INTEGER PRIMARY KEY,
   snapshot_id  INTEGER NOT NULL REFERENCES serp_snapshots(id) ON DELETE CASCADE,
+  -- Organic position: 1 for the first organic result. rank_absolute is the
+  -- on-page position counting every SERP feature, kept for audit only.
   rank         INTEGER NOT NULL,
+  rank_absolute INTEGER,
   url          TEXT NOT NULL,
   root_domain  TEXT,
   title        TEXT,
@@ -605,6 +608,7 @@ function ensureColumn(table, column, definition) {
 ensureColumn('entities', 'probe_terms', "TEXT NOT NULL DEFAULT '[]'");
 ensureColumn('serp_snapshots', 'signals', "TEXT NOT NULL DEFAULT '{}'");
 ensureColumn('content_sources', 'byline_client', 'INTEGER NOT NULL DEFAULT 0');
+ensureColumn('serp_results', 'rank_absolute', 'INTEGER');
 
 // --- Query helpers ----------------------------------------------------------
 

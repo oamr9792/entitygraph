@@ -33,6 +33,8 @@ const ENDPOINTS = {
   user_data: '/v3/appendix/user_data',
 };
 
+export const SERP_ORGANIC_ENDPOINT = ENDPOINTS.serp_organic;
+
 const BASE = 'https://api.dataforseo.com';
 
 function authHeader() {
@@ -303,19 +305,32 @@ function currentPeriodStart(dateGroup) {
  * "what does the web say", and conflating the two is the mistake §14 exists to
  * prevent.
  */
+/** The request for one Google results page. Also the cache key's task, so it has one definition. */
+export const serpOrganicTask = (keyword, { depth = 100, location = 'United States', language = 'en', device = 'desktop' } = {}) => ({
+  keyword,
+  location_name: location,
+  language_code: language,
+  depth,
+  device,
+  os: 'windows',
+});
+
 export async function serpOrganic(keyword, { depth = 100, location = 'United States', language = 'en', device = 'desktop', entityId, jobId, force } = {}) {
-  const task = {
-    keyword,
-    location_name: location,
-    language_code: language,
-    depth,
-    device,
-    os: 'windows',
-  };
+  const task = serpOrganicTask(keyword, { depth, location, language, device });
   const { result } = await call(ENDPOINTS.serp_organic, task, { entityId, jobId, force });
   const page = result?.[0] ?? {};
   const items = page.items ?? [];
-  const organic = items.filter((i) => i.type === 'organic');
+  // A result's rank is its ORGANIC position: 1 for the first organic result,
+  // counting nothing else on the page. §53's weights (#1 = 1.00 … #10 = 0.10)
+  // describe ten organic slots, and a knowledge panel, People Also Ask box or
+  // video carousel appearing above them must not demote every result — those
+  // features change from one capture to the next while the organic order often
+  // does not. Computed from page order rather than read from rank_group, so the
+  // definition does not depend on how the provider groups item types. The
+  // absolute on-page position is kept beside it, for display and audit only.
+  const organic = items
+    .filter((i) => i.type === 'organic')
+    .sort((a, b) => (a.rank_absolute ?? a.rank_group ?? 0) - (b.rank_absolute ?? b.rank_group ?? 0));
   return {
     keyword,
     location,
@@ -327,8 +342,9 @@ export async function serpOrganic(keyword, { depth = 100, location = 'United Sta
     // Related searches, People Also Ask, the knowledge panel: Google stating
     // its own associations for the query. Previously discarded.
     signals: parseSerpSignals(items),
-    results: organic.map((i) => ({
-      rank: i.rank_absolute ?? i.rank_group,
+    results: organic.map((i, index) => ({
+      rank: index + 1,
+      rank_absolute: i.rank_absolute ?? null,
       url: i.url,
       root_domain: rootDomain(i.domain || i.url),
       title: i.title ?? null,

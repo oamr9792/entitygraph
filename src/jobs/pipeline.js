@@ -2,11 +2,11 @@ import config, { MODEL } from '../config.js';
 import { all, get, run, setSetting } from '../db.js';
 import { identityProfile, searchQueries } from '../services/identity.js';
 import { searchAcross } from '../providers/corpus/index.js';
-import '../providers/corpus/providers.js'; // registers the four providers
+import { serpCandidates } from '../providers/corpus/providers.js'; // also registers the four providers
 import * as dfs from '../providers/dataforseo.js';
 import { ingestCandidates, recordVersion } from '../services/ingest.js';
 import { fetchPageText, storeBody, mapPool } from '../services/fetch.js';
-import { withSerpPrior, serpRankFromRef } from '../services/disambiguation.js';
+import { withSerpPrior } from '../services/disambiguation.js';
 import { MIN_READABLE_CHARS, needsFullRead, surnameAnchor, windowsForRank } from '../services/serp-coverage.js';
 import { probeTermsFromSignals, allocateProbeBudget } from '../providers/serp-signals.js';
 import { scoreDocument, adjudicate, saveMatch } from '../services/disambiguation.js';
@@ -14,7 +14,10 @@ import { buildWindows, extractFromWindow } from '../services/extraction.js';
 import { upsertAssociation, recordSurfaceForm, canonicaliseAssociations, applyDefaultHierarchy } from '../services/canonicalize.js';
 import { fingerprintDocument, clusterDocuments } from '../services/duplicates.js';
 import { rescoreEntity, persistMonthlyMetrics, leaderboard } from '../services/metrics.js';
-import { captureEntitySerp, classifySnapshot, associationQueries, captureAssociationSerp } from '../services/serp.js';
+import {
+  captureEntitySerp, classifySnapshot, associationQueries, captureAssociationSerp,
+  storeSerpSnapshot, linkSnapshotDocuments, snapshotRanks, latestEntitySnapshotId,
+} from '../services/serp.js';
 import { coverageConfidence } from '../services/coverage.js';
 import { generateAlerts, storeSnapshot } from '../services/alerts.js';
 import { contentHash } from '../util/hash.js';
@@ -48,6 +51,17 @@ export const STEPS = [
   'run_serp_queries',
   'generate_dashboard',
 ];
+
+/**
+ * Google positions for this entity's documents: from the snapshot this build
+ * captured or, for a run that did not capture one (resumed, or with the corpus
+ * step skipped), from the latest stored snapshot. Always a stored snapshot,
+ * never a document's provider tag.
+ */
+const serpRanksFor = (state) => {
+  if (!state.serpRanks) state.serpRanks = snapshotRanks(latestEntitySnapshotId(state.entity.id));
+  return state.serpRanks;
+};
 
 const safeJson = (value, fallback) => {
   try {
@@ -137,32 +151,40 @@ const HANDLERS = {
 
     // 1. §12 — Google's page for the name. At most a hundred documents, and
     // taken before anything else can crowd it out.
+    //
+    // Captured once per build, and that capture is the record: the corpus
+    // seeds, the related-search probes, the identity prior, the extraction
+    // priority, the overlay and the Google Retrieval Score all read this one
+    // stored snapshot. The build used to request the page three times — for the
+    // documents, for the related searches, and again for the overlay at the
+    // end — and to rank documents by a tag written when each was first created,
+    // which could come from a different day's page or a different query.
     const serpItems = [];
     let googleSignals = null;
-    if (state.options.serpAsCorpus !== false) {
-      const serpOptions = {
-        depth: state.options.serpDepth ?? 100,
-        location: state.options.location,
-        language: state.options.language,
-        entityId,
-        jobId: ctx.jobId,
-      };
-      // The canonical name, never aliases[0]. searchQueries orders user aliases
-      // ahead of the canonical name, so aliases[0] can be a rarely used form —
-      // "Jay P. Lefkowitz" — whose Google page differs from the one people see,
-      // and which pairs with a subject in 10 indexed documents where the name
-      // people actually use pairs with it in 750. The overlay captured later
-      // uses the canonical name too, so corpus and retrieval see the same page.
-      const { items } = await searchAcross(['google_serp'], state.entity.canonical_name, { ...serpOptions, force: state.options.force });
-      serpItems.push(...items);
-      collected.push(...items);
-      // The same request, read back from the cache it was just written to: the
-      // corpus-provider interface carries documents, and the rest of the page —
-      // related searches, the knowledge panel — is needed as well.
+    state.serpSnapshotId = null;
+    if (state.options.serpAsCorpus !== false && dfs.isConfigured()) {
       try {
-        googleSignals = (await dfs.serpOrganic(state.entity.canonical_name, serpOptions)).signals ?? null;
-      } catch {
-        googleSignals = null;
+        // The canonical name, never aliases[0]. searchQueries orders user
+        // aliases ahead of the canonical name, so aliases[0] can be a rarely used
+        // form — "Jay P. Lefkowitz" — whose Google page differs from the one
+        // people see, and which pairs with a subject in 10 indexed documents
+        // where the name people actually use pairs with it in 750.
+        const serp = await dfs.serpOrganic(state.entity.canonical_name, {
+          depth: state.options.serpDepth ?? 100,
+          location: state.options.location,
+          language: state.options.language,
+          entityId,
+          jobId: ctx.jobId,
+          force: state.options.force,
+        });
+        state.serpSnapshotId = storeSerpSnapshot(entityId, serp, { queryKind: 'entity' }).snapshot_id;
+        googleSignals = serp.signals ?? null;
+        serpItems.push(...serpCandidates(serp));
+        collected.push(...serpItems);
+      } catch (err) {
+        // A failed capture must not sink the corpus build. run_serp_queries
+        // captures again at the end when this one did not happen.
+        state.counts.serp_error = err.message;
       }
     }
     state.googleSignals = googleSignals;
@@ -238,20 +260,17 @@ const HANDLERS = {
     state.counts.probes = probeReport;
     state.counts.serp_documents = serpAdded;
 
-    // Which documents came from Google and from the probes, by id, for the two
-    // later steps that must treat them differently: page fetching reads them
-    // first, and disambiguation credits a Google rank for the name. Held in run
-    // state rather than on the row, because a document the name search created
-    // in an earlier build keeps its original provider tag — and on a deployed
-    // database that is most of them.
+    // Which documents came from Google and from the probes, by id, for the
+    // later steps that treat them differently: page fetching and extraction
+    // read Google's pages first, and disambiguation credits a Google rank for
+    // the name. Ranks are read from this build's stored snapshot, linked now to
+    // the documents just ingested from it — never from a document's provider
+    // tag, which is written once, when the document is first created, and goes
+    // stale as the page moves.
     const docIdFor = (item) =>
       get(`SELECT id FROM documents WHERE url = ? OR canonical_url = ?`, item.url, item.canonical_url ?? item.url)?.id ?? null;
-    state.serpRanks = new Map();
-    for (const item of serpItems) {
-      const id = docIdFor(item);
-      const rank = Number(/^rank:(\d+)$/.exec(item.provider_ref ?? '')?.[1]);
-      if (id && rank && !(state.serpRanks.get(id) <= rank)) state.serpRanks.set(id, rank);
-    }
+    if (state.serpSnapshotId) linkSnapshotDocuments(state.serpSnapshotId);
+    state.serpRanks = snapshotRanks(state.serpSnapshotId);
     state.priorityDocumentIds = new Set([...state.serpRanks.keys(), ...probeItems.map(docIdFor).filter(Boolean)]);
 
     // Recorded for §70/§71: coverage cannot be reported honestly without
@@ -270,7 +289,9 @@ const HANDLERS = {
     const probeSummary = probeReport.length
       ? `; probes ${probeReport.map((p) => `${p.term}:${p.returned}`).join(', ')}`
       : '';
-    const serpSummary = serpAdded ? `; ${serpAdded} from the SERP` : '';
+    const serpSummary = serpAdded
+      ? `; ${serpAdded} from the SERP`
+      : state.counts.serp_error ? `; Google capture failed (${state.counts.serp_error})` : '';
     return `${collected.length} citations over ${queried.length} alias queries${probeSummary}${serpSummary} → ${ingested.total} unique documents (${ingested.created} new); stopped: ${stopReason}`;
   },
 
@@ -338,7 +359,7 @@ const HANDLERS = {
     // and SERP documents carry no domain rank — so they sorted last, fell
     // outside the fetch limit, and were scored from Google's two-line
     // description. The pages people actually see were the pages least read.
-    const serpRanks = state.serpRanks ?? new Map();
+    const serpRanks = serpRanksFor(state);
     // Google's own result pages are read again on every build until they have
     // been read properly. A page that was blocked, failed or came back as a
     // cookie wall on one build used to stay that way for good, and its two-line
@@ -428,9 +449,10 @@ const HANDLERS = {
       });
       // A page Google ranks for the entity's own name has already passed
       // Google's disambiguation. Credit that, rank-weighted — a prior that moves
-      // a borderline page into adjudication, never an automatic accept. The run
-      // state knows this build's ranks; the row tag covers a resumed build.
-      result = withSerpPrior(result, state.serpRanks?.get(doc.id) ?? serpRankFromRef(doc.provider_ref));
+      // a borderline page into adjudication, never an automatic accept. Only a
+      // page on the stored snapshot gets it: a document that ranked on an older
+      // capture, or for another query, does not.
+      result = withSerpPrior(result, serpRanksFor(state).get(doc.id));
 
       if (result.verdict === 'review' && adjudicated < adjudicationBudget) {
         try {
@@ -480,7 +502,7 @@ const HANDLERS = {
     // Google's result pages first, in rank order. They carry no domain rank, so
     // they used to be extracted last — and a build that reached its cost ceiling
     // stopped before the pages people actually see had been read at all.
-    const googleRank = (doc) => state.serpRanks?.get(doc.id) ?? serpRankFromRef(doc.provider_ref);
+    const googleRank = (doc) => serpRanksFor(state).get(doc.id) ?? null;
     const rankOrder = (doc) => googleRank(doc) ?? Number.MAX_SAFE_INTEGER;
     docs.sort((a, b) => rankOrder(a) - rankOrder(b));
     const surname = surnameAnchor(profile);
@@ -636,19 +658,41 @@ const HANDLERS = {
     return `${res.written} monthly metric rows over ${res.months} months; top: ${state.counts.top.join(', ') || 'none'}`;
   },
 
-  /** §13 — the SERP dataset, captured separately and never merged with the corpus. */
+  /**
+   * §13 — classify Google's page for the name against the associations this
+   * build found. The page was captured at the start of the build and is reused
+   * here; a new capture is made only when that one did not happen.
+   */
   async run_serp_queries(state, ctx) {
     if (!dfs.isConfigured()) return 'skipped — DataForSEO not configured';
-    if (state.options.skipSerp) return 'skipped by request';
     const entity = state.entity;
-    const snapshot = await captureEntitySerp(entity.id, entity.canonical_name, {
-      depth: state.options.serpDepth ?? 100,
-      location: state.options.location,
-      language: state.options.language,
-      jobId: ctx.jobId,
-      force: state.options.force,
-    });
-    const classified = await classifySnapshot(entity.id, snapshot.snapshot_id, { jobId: ctx.jobId });
+
+    if (state.options.skipSerp) {
+      // No new capture. A snapshot this build already stored is still
+      // classified, without LLM calls, or it would become the latest snapshot
+      // with nothing linked to it and empty the overlay.
+      if (!state.serpSnapshotId) return 'skipped by request';
+      linkSnapshotDocuments(state.serpSnapshotId);
+      const quiet = await classifySnapshot(entity.id, state.serpSnapshotId, { jobId: ctx.jobId, useLlm: false });
+      return `no new capture by request; this build's snapshot classified without LLM: ${quiet.classified} association links, ${quiet.unclassified} unclassified`;
+    }
+
+    let snapshotId = state.serpSnapshotId;
+    const reused = Boolean(snapshotId);
+    if (!reused) {
+      snapshotId = (await captureEntitySerp(entity.id, entity.canonical_name, {
+        depth: state.options.serpDepth ?? 100,
+        location: state.options.location,
+        language: state.options.language,
+        jobId: ctx.jobId,
+        force: state.options.force,
+      })).snapshot_id;
+    }
+    // Pages ingested after the snapshot was stored are linked now, so the
+    // classification can use what was extracted from them.
+    linkSnapshotDocuments(snapshotId);
+    const classified = await classifySnapshot(entity.id, snapshotId, { jobId: ctx.jobId });
+    const snapshot = { results: classified.results };
 
     let associationSerps = 0;
     if (state.options.associationSerps) {
@@ -659,7 +703,7 @@ const HANDLERS = {
       }
     }
 
-    return `entity SERP: ${snapshot.results} results, ${classified.classified} association links, ${classified.unclassified} unclassified${associationSerps ? `; ${associationSerps} association SERPs` : ''}`;
+    return `entity SERP (${reused ? 'captured at the start of this build' : 'captured now'}): ${snapshot.results} results, ${classified.classified} association links, ${classified.unclassified} unclassified${associationSerps ? `; ${associationSerps} association SERPs` : ''}`;
   },
 
   async generate_dashboard(state) {

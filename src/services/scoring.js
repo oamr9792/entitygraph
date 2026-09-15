@@ -399,7 +399,11 @@ export function conditionalScores({ coOccurrence, entityDocuments, associationDo
 
 // --- §53 Google Retrieval Score ---------------------------------------------
 
-/** Rank weight: #1 = 1.00 down to #10 = 0.10, and 0 beyond the first page. */
+/**
+ * Rank weight: #1 = 1.00 down to #10 = 0.10, and 0 beyond. `rank` is the
+ * ORGANIC position (see dfs.serpOrganic): ten weighted slots are the first ten
+ * organic results, however many SERP features sit between them.
+ */
 export function rankWeight(rank, overrides) {
   const m = model(overrides);
   return m.serpRankWeights[rank - 1] ?? 0;
