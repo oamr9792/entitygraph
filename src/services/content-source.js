@@ -7,7 +7,7 @@ import { identityProfile } from './identity.js';
 import { assertPublicUrl } from './url-safety.js';
 import { findOccurrences, normaliseWhitespace } from '../util/text.js';
 import { rootDomain } from '../util/hash.js';
-import { chunkPassages } from './content-checks.js';
+import { chunkPassages, cleanPageTitle, detectBylineClient } from './content-checks.js';
 
 /**
  * The page an analysis is written from — usually the client's own press
@@ -70,6 +70,7 @@ export function sourceSummary(row) {
     chars: row.chars,
     via: row.via,
     names_client: Boolean(row.names_client),
+    byline_client: Boolean(row.byline_client),
     created_at: row.created_at,
   };
 }
@@ -81,6 +82,7 @@ export async function readSource(entityId, rawUrl, user = null) {
   let via = null;
   let finalUrl = url.href;
   let reason = null;
+  let html = '';
 
   let allowed = true;
   try { allowed = await robotsAllows(url.href); } catch { /* unreadable robots.txt permits reading */ }
@@ -89,6 +91,7 @@ export async function readSource(entityId, rawUrl, user = null) {
     try {
       const direct = await fetchDirect(url);
       if (direct.ok) {
+        html = direct.html;
         text = extractText(direct.html);
         title = titleOf(direct.html);
         via = 'direct';
@@ -123,10 +126,15 @@ export async function readSource(entityId, rawUrl, user = null) {
   }
 
   const profile = identityProfile(entityId);
-  const namesClient = findOccurrences(text, [profile.canonical_name, ...(profile.aliases ?? [])]).length > 0;
+  const names = [profile.canonical_name, ...(profile.aliases ?? [])];
+  const namesClient = findOccurrences(text, names).length > 0;
+  const bylineClient = detectBylineClient({ html, text, names });
+  // A direct read that hit a bot check still has a <title> — "One moment,
+  // please…" — even when DataForSEO supplied the real text.
+  title = cleanPageTitle(title, text);
   const res = run(
-    `INSERT INTO content_sources (entity_id, url, final_url, title, body, chars, via, names_client, fetched_by)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO content_sources (entity_id, url, final_url, title, body, chars, via, names_client, byline_client, fetched_by)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     entityId,
     url.href,
     finalUrl,
@@ -135,6 +143,7 @@ export async function readSource(entityId, rawUrl, user = null) {
     text.length,
     via,
     namesClient ? 1 : 0,
+    bylineClient ? 1 : 0,
     user?.id ?? null
   );
   return sourceSummary(get(`SELECT * FROM content_sources WHERE id = ?`, Number(res.lastInsertRowid)));

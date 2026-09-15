@@ -27,8 +27,8 @@ export const FORMATS = Object.freeze({
     requiresNotes: false,
   },
   source_analysis: {
-    label: 'Analysis of a page',
-    where: 'The client’s newsroom or blog, or a publication not already in the corpus, clearly attributed to the client.',
+    label: 'Article rewrite & analysis',
+    where: 'The client’s newsroom or blog, or a site not already in the corpus. It credits and links the original article.',
     length: '600–900 words',
     mode: 'grow',
     requiresNotes: false,
@@ -65,6 +65,52 @@ export const FORMATS = Object.freeze({
 });
 
 export const FORMAT_ORDER = ['profile', 'article', 'source_analysis', 'faq', 'press_release', 'social_post', 'correction_request'];
+
+/** What the original article is to the client, which decides how a rewrite tells it. */
+export const SOURCE_RELATIONS = Object.freeze({
+  about: {
+    label: 'An article about the client',
+    hint: 'Reports what the original article said, credited to it, then analyses the story.',
+  },
+  by: {
+    label: 'Written by the client',
+    hint: 'Sets out the client’s own argument, credited to them and the publication, then analyses it.',
+  },
+  announcement: {
+    label: 'The client’s own announcement',
+    hint: 'Reports the news it announces, credited to the announcement, then analyses its significance.',
+  },
+});
+
+// Titles served by bot checks and error pages rather than by the article.
+const CHALLENGE_TITLE = /^(one moment|just a moment|please wait|attention required|access denied|are you a robot|security check|checking your browser|verify you are human|403|404|page not found)/i;
+
+/** The article's real title, or its first headline-like line when the page served a bot check. */
+export function cleanPageTitle(title, text = '') {
+  const t = normaliseWhitespace(title ?? '');
+  if (t && !CHALLENGE_TITLE.test(t)) return t.slice(0, 300);
+  const line = String(text ?? '')
+    .split('\n')
+    .map((l) => normaliseWhitespace(l))
+    .find((l) => l.split(' ').length >= 3 && l.length <= 160 && !CHALLENGE_TITLE.test(l));
+  return line ?? null;
+}
+
+/**
+ * Whether the client wrote the article: an author meta tag naming them, or a
+ * byline line near the top. "Represented by Jay Lefkowitz" in the body is not a
+ * byline, so only a line that starts with "By" counts.
+ */
+export function detectBylineClient({ html = '', text = '', names = [] } = {}) {
+  const author = /<meta[^>]+(?:name|property)=["'](?:author|article:author|parsely-author|sailthru\.author|dc\.creator)["'][^>]*content=["']([^"']+)["']/i
+    .exec(html ?? '')?.[1];
+  if (author && findOccurrences(author, names).length) return true;
+  const head = String(text ?? '').slice(0, 2500);
+  for (const match of head.matchAll(/^\s*(?:by|written by|opinion by|op-ed by)\s*[:|]?\s+(.{3,80})$/gim)) {
+    if (findOccurrences(match[1], names).length) return true;
+  }
+  return false;
+}
 
 // Which formats each action-plan route actually calls for, and why.
 const ROUTE_FORMATS = {
@@ -221,10 +267,25 @@ export function verbatimOverlaps(text, facts, n = 12) {
 }
 
 // A quotation: straight or curly double quotes around at least a short phrase.
-const QUOTE = /[“"]([^”"\n]{15,400})[”"]/g;
+const QUOTE = /[“"]([^”"\n]{15,2000})[”"]/g;
 
 /** The body with its quotations blanked, so quoting a source is not read as copying it. */
 export const withoutQuotes = (body) => String(body ?? '').replace(QUOTE, ' ');
+
+/** How much of a piece is quotation, and the longest single quotation, in words. */
+export function quotationStats(body) {
+  const text = String(body ?? '');
+  const words = (s) => normaliseForMatch(s).split(' ').filter(Boolean).length;
+  const total = words(text);
+  let quoted = 0;
+  let longest = 0;
+  for (const match of text.matchAll(QUOTE)) {
+    const n = words(match[1]);
+    quoted += n;
+    longest = Math.max(longest, n);
+  }
+  return { total, quoted, share: total ? quoted / total : 0, longest };
+}
 
 /**
  * Quotations that do not appear word for word in any fact. An invented quote is
@@ -308,13 +369,15 @@ export function targetCoverage({ title = '', body = '' } = {}, targets = [], { n
     .find((p) => p && !/^#/.test(p)) ?? '';
   const units = [title ?? '', ...sentencesOf(body)].filter(Boolean);
 
-  return targets.map((target) => {
+  return targets.map((target, index) => {
     const terms = [target.label, ...(target.terms ?? [])];
     const starts = new Set(findOccurrences(`${title ?? ''}\n${body ?? ''}`, terms).map((hit) => hit.start));
     const mentions = starts.size;
     return {
       association_id: target.association_id,
       label: target.label,
+      // The first association leads the piece; the rest are carried inside it.
+      primary: target.primary ?? index === 0,
       mentions,
       counted: Math.min(mentions, cap),
       cap,
@@ -396,6 +459,29 @@ export function checkDraft(
         text: `Quotes words that are not in any source: “${shorten(quote)}”. Quotations must be copied exactly from a fact.`,
       });
     }
+    // A rewrite made mostly of someone else's sentences is a copy with quotation
+    // marks on it, whatever the attribution says.
+    const quoting = quotationStats(body);
+    if (quoting.longest > 50) {
+      issues.push({
+        kind: 'quote_too_long',
+        severity: 'block',
+        text: `One quotation runs to ${quoting.longest} words. Keep quotations under 50 words and tell the rest in your own words.`,
+      });
+    }
+    if (quoting.share > 0.25) {
+      issues.push({
+        kind: 'quoted_share',
+        severity: 'block',
+        text: `Quotations make up ${Math.round(quoting.share * 100)}% of the piece. A rewrite has to be mostly your own words.`,
+      });
+    } else if (quoting.share > 0.15) {
+      issues.push({
+        kind: 'quoted_share',
+        severity: 'warn',
+        text: `Quotations make up ${Math.round(quoting.share * 100)}% of the piece; aim for well under 15%.`,
+      });
+    }
   }
 
   for (const placeholder of String(body ?? '').match(/\[CONFIRM:[^\]]*\]/gi) ?? []) {
@@ -415,8 +501,12 @@ export function checkDraft(
         text: `${t.label} never appears in a sentence with the client’s name. Same-sentence mentions count for far more than distant ones.`,
       });
     }
-    if (!t.in_title && !t.in_opening) {
-      issues.push({ kind: 'target_not_leading', severity: 'warn', text: `${t.label} is not in the title or the opening paragraph.` });
+    if (t.primary && !t.in_title && !t.in_opening) {
+      issues.push({
+        kind: 'target_not_leading',
+        severity: 'warn',
+        text: `${t.label}, the main association, is not in the title or the opening paragraph.`,
+      });
     }
     if (t.mentions > cap * 2) {
       issues.push({
@@ -439,7 +529,7 @@ export function checkDraft(
 }
 
 /** The structure a writer works to, with or without a generated draft. */
-export function outlineFor(format, { entityName = 'The client', grow = [] } = {}) {
+export function outlineFor(format, { entityName = 'The client', grow = [], relation = 'about' } = {}) {
   const labels = grow.map((g) => g.label);
   switch (format) {
     case 'profile':
@@ -473,15 +563,32 @@ export function outlineFor(format, { entityName = 'The client', grow = [] } = {}
       ];
     case 'social_post':
       return ['Opening line', ...labels.slice(0, 2).map((l) => `One or two sentences on ${l}`), 'Close'];
-    case 'source_analysis':
+    case 'source_analysis': {
+      // One structure for the story, whatever number of associations is ticked.
+      // A section per association turns a rewrite into a checklist.
+      const main = labels[0];
+      const others = labels.slice(1);
+      const woven = others.length ? `, with ${others.join(', ')} woven into the story where the facts support them` : '';
+      if (relation === 'by') {
+        return [
+          `Headline on ${entityName}’s argument${main ? `, carrying ${main}` : ''}`,
+          'Standfirst: the argument in one sentence',
+          `Opening: ${entityName}, writing in the original publication, argues… — credited and linked`,
+          'The argument: its main points in your own words, with a few short credited quotations',
+          `Why it matters: what the argument draws on in ${entityName}’s own record${woven}`,
+          'Close: where the debate stands, and the link to the original piece',
+        ];
+      }
+      const subject = relation === 'announcement' ? 'what was announced' : 'what the original article reported';
       return [
-        `Headline: what the page announces, carrying ${entityName}${labels[0] ? ` and ${labels[0]}` : ''}`,
-        `Opening: the announcement in two sentences, naming ${entityName}`,
-        'What it means: analysis grounded in the page, in your own words',
-        ...labels.map((l) => `Context: ${entityName} and ${l}, from the wider sourced facts`),
-        'What to watch next, only where the facts support it',
-        'Source line: the original announcement, by name and link',
+        `Headline that reports the story, naming ${entityName}${main ? ` and ${main}` : ''}`,
+        `Standfirst: ${subject}, and why it matters, in one sentence`,
+        `Opening: ${subject}, credited by name to the original and linked`,
+        'The story: the key details in your own words, with a few short credited quotations',
+        `Analysis: what it shows about ${entityName}${woven}`,
+        'Close: where things stand now',
       ];
+    }
     case 'correction_request':
       return [
         'To the editor: identify the article by headline, date and URL',

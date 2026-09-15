@@ -59,7 +59,7 @@ function placementPanel(p, avoid) {
 
 export async function contentBuilderView({ params, query }) {
   const qs = new URLSearchParams();
-  for (const key of ['format', 'grow', 'document', 'purpose', 'source']) if (query.get(key)) qs.set(key, query.get(key));
+  for (const key of ['format', 'grow', 'document', 'purpose', 'source', 'relation']) if (query.get(key)) qs.set(key, query.get(key));
   const brief = await api(`/api/associations/${params.id}/content-brief?${qs}`);
 
   if (brief.unavailable) {
@@ -160,7 +160,7 @@ export async function contentBuilderView({ params, query }) {
       read.textContent = 'Reading…';
       try {
         const res = await api(`/api/entities/${brief.entity.id}/content-sources`, { method: 'POST', body: { url: input.value.trim() } });
-        go({ source: String(res.source.id) });
+        go({ source: String(res.source.id), relation: null });
       } catch (err) {
         toast(err.message, 'error');
         read.disabled = false;
@@ -181,14 +181,24 @@ export async function contentBuilderView({ params, query }) {
               h('div', { class: 'small dim' },
                 `${fmt.n(s.chars)} characters, read ${s.via === 'direct' ? 'directly' : 'through DataForSEO'} · `,
                 `${brief.facts.filter((f) => f.source === 'page').length} passages the draft can cite`),
-              s.names_client ? null : h('div', { class: 'small sentiment negative' }, 'This page never names the client.'))
+              s.names_client ? null : h('div', { class: 'small sentiment negative' }, 'This page never names the client.'),
+              h('div', { style: { marginTop: '0.7rem' } },
+                h('div', { class: 'small muted', style: { marginBottom: '0.3rem' } }, 'This page is:'),
+                h('div', { class: 'segmented' }, brief.relations.map((r) => h('button', {
+                  type: 'button',
+                  class: r.key === brief.relation ? 'active' : '',
+                  onclick: () => go({ relation: r.key }),
+                }, r.label))),
+                h('div', { class: 'small dim', style: { marginTop: '0.3rem' } },
+                  brief.relations.find((r) => r.key === brief.relation)?.hint ?? '',
+                  s.byline_client ? ' The byline appears to be the client’s.' : '')))
           : h('p', { class: 'small muted', style: { marginBottom: 0 } },
               'Paste the URL of a press release, announcement or article. The draft analyses it — what was announced and why it matters — and carries the associations below. Quotations must match the page word for word.'),
         others.length
           ? h('div', { class: 'small', style: { marginTop: '0.6rem' } }, 'Read before: ',
               others.map((r, i) => [i ? ' · ' : '', h('a', {
                 href: '#',
-                onclick: (e) => { e.preventDefault(); go({ source: String(r.id) }); },
+                onclick: (e) => { e.preventDefault(); go({ source: String(r.id), relation: null }); },
               }, r.title ?? r.domain)]))
           : null));
   }
@@ -221,6 +231,7 @@ export async function contentBuilderView({ params, query }) {
                 key: 'label', label: 'Association',
                 render: (c) => h('div', {},
                   h('a', { href: `#/associations/${c.association_id}` }, c.label),
+                  c.association_id === brief.selected_ids[0] ? h('span', { class: 'chip good', title: 'The first association ticked leads the piece.' }, ' main') : null,
                   c.is_identity_marker ? h('span', { class: 'chip marker' }, ' identity') : null,
                   h('div', { class: 'small dim' }, c.why)),
               },
@@ -287,7 +298,7 @@ export async function contentBuilderView({ params, query }) {
               h('th', { class: 'no-sort' }, 'Also written as'),
               h('th', { class: 'no-sort' }, 'Relationship in the sources'))),
             h('tbody', {}, brief.targets.map((t) => h('tr', {},
-              h('td', {}, t.label),
+              h('td', {}, t.label, t.primary ? h('span', { class: 'chip good', style: { marginLeft: '0.3rem' } }, 'main') : null),
               h('td', { class: 'small dim' }, t.terms.join(', ') || '—'),
               h('td', { class: 'small dim' }, t.relationships.join(', ') || '—'))))),
           h('ul', { style: { marginTop: '0.8rem' } }, brief.optimisation.map((o) => h('li', { class: 'small' }, o))),
@@ -325,6 +336,7 @@ export async function contentBuilderView({ params, query }) {
           grow_association_ids: brief.selected_ids,
           source_document_id: brief.source_document_id,
           source_id: brief.source?.id ?? null,
+          relation: brief.relation,
           notes: notes.value,
           acknowledge: acknowledge.checked,
         },
@@ -427,10 +439,11 @@ export async function draftView({ params }) {
             h('th', { class: 'no-sort' }, 'Beside the name'),
             h('th', { class: 'no-sort' }, 'Title or opening'))),
           h('tbody', {}, checks.targets.map((t) => h('tr', {},
-            h('td', {}, h('a', { href: `#/associations/${t.association_id}` }, t.label)),
+            h('td', {}, h('a', { href: `#/associations/${t.association_id}` }, t.label),
+              t.primary ? h('span', { class: 'chip good', style: { marginLeft: '0.3rem' } }, 'main') : null),
             h('td', { class: 'num' }, `${t.counted} of ${t.cap}`, t.mentions > t.counted ? h('div', { class: 'small dim' }, `${t.mentions} in total`) : null),
             h('td', {}, yesNo(t.beside_name)),
-            h('td', {}, yesNo(t.in_title || t.in_opening))))))),
+            h('td', {}, t.primary ? yesNo(t.in_title || t.in_opening) : h('span', { class: 'dim small' }, 'not needed'))))))),
         h('p', { class: 'small dim', style: { padding: '0 0.95rem 0.7rem', margin: 0 } }, DISCLAIMERS.content_optimisation))
     : null;
 
@@ -507,7 +520,7 @@ export async function draftView({ params }) {
           d.model ? ` · ${d.model}, $${Number(d.cost_usd ?? 0).toFixed(3)}` : '',
           d.published_url ? h('span', {}, ' · ', h('a', { href: d.published_url, target: '_blank', rel: 'noopener noreferrer' }, 'published')) : null)),
       h('div', { class: 'toolbar' },
-        h('button', { onclick: () => navigate(`#/associations/${d.association_id}/content?format=${d.format}&purpose=${d.purpose}${d.inputs?.source_id ? `&source=${d.inputs.source_id}` : ''}`) }, 'Builder'),
+        h('button', { onclick: () => navigate(`#/associations/${d.association_id}/content?format=${d.format}&purpose=${d.purpose}${d.inputs?.source_id ? `&source=${d.inputs.source_id}` : ''}${d.inputs?.relation ? `&relation=${d.inputs.relation}` : ''}`) }, 'Builder'),
         h('button', { onclick: () => navigate(`#/entities/${d.entity_id}/content`) }, 'All drafts'))),
     disclaimer(),
     h('div', { class: 'weak-states' },

@@ -15,6 +15,7 @@ contentRoutes.get('/api/associations/:id/content-brief', (req, res, params, url)
     sourceDocumentId: url.searchParams.get('document'),
     purpose: url.searchParams.get('purpose'),
     sourceId: url.searchParams.get('source'),
+    relation: url.searchParams.get('relation'),
   }));
 });
 

@@ -572,6 +572,7 @@ CREATE TABLE IF NOT EXISTS content_sources (
   chars        INTEGER NOT NULL DEFAULT 0,
   via          TEXT NOT NULL,
   names_client INTEGER NOT NULL DEFAULT 0,
+  byline_client INTEGER NOT NULL DEFAULT 0,
   fetched_by   INTEGER REFERENCES app_user(id) ON DELETE SET NULL,
   created_at   TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -603,6 +604,7 @@ function ensureColumn(table, column, definition) {
 
 ensureColumn('entities', 'probe_terms', "TEXT NOT NULL DEFAULT '[]'");
 ensureColumn('serp_snapshots', 'signals', "TEXT NOT NULL DEFAULT '{}'");
+ensureColumn('content_sources', 'byline_client', 'INTEGER NOT NULL DEFAULT 0');
 
 // --- Query helpers ----------------------------------------------------------
 

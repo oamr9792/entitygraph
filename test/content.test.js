@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 
 import {
   FORMATS, FORMAT_ORDER, strategyFor, strengthenStrategy, avoidTermsFor, usableAliases, checkDraft, targetCoverage,
-  verbatimOverlaps, outlineFor, unverifiedQuotes, withoutQuotes, chunkPassages,
+  verbatimOverlaps, outlineFor, unverifiedQuotes, withoutQuotes, chunkPassages, SOURCE_RELATIONS, cleanPageTitle,
+  detectBylineClient, quotationStats,
 } from '../src/services/content-checks.js';
 
 /**
@@ -170,7 +171,7 @@ test('an analysis is a recommended format whenever content can displace or stren
   assert.equal(FORMATS.source_analysis.requiresSource, true);
   assert.ok(strategyFor({ routes: [route('displace')] }).recommended.includes('source_analysis'));
   assert.ok(strengthenStrategy({ association: { label: 'x' }, routes: [] }).recommended.includes('source_analysis'));
-  assert.ok(outlineFor('source_analysis', { entityName: 'Jane Smith', grow: [{ label: 'Harbour Capital' }] }).some((o) => /Source line/.test(o)));
+  assert.ok(outlineFor('source_analysis', { entityName: 'Jane Smith', grow: [{ label: 'Harbour Capital' }] }).some((o) => /original/.test(o)));
 });
 
 test('a quotation copied exactly from the page passes; an invented or altered one blocks approval', () => {
@@ -189,8 +190,12 @@ test('a quotation copied exactly from the page passes; an invented or altered on
 
 test('quoting the page is allowed; reusing its sentences as your own is not', () => {
   const quoted = 'Jane Smith said “This fund reflects twenty years of work in public-private partnerships.”';
+  const prose = 'The new fund is the latest step in a long career spent bringing public agencies and private investors together on large projects. '
+    + 'Smith will lead it from the firm’s New York office, where she has spent most of her working life. '
+    + 'For the firm, the appointment signals where it expects the next wave of infrastructure spending to come from, and who it trusts to find it. ';
   assert.equal(verbatimOverlaps(withoutQuotes(quoted), release).length, 0);
-  assert.equal(checkDraft({ body: quoted, claims: [{ sentence: quoted, fact_ids: ['S1'] }] }, { facts: release }).ok, true);
+  const quotedResult = checkDraft({ body: `${prose}${quoted}`, claims: [{ sentence: quoted, fact_ids: ['S1'] }] }, { facts: release });
+  assert.equal(quotedResult.ok, true, JSON.stringify(quotedResult.issues));
 
   const lifted = 'Harbour Capital today announced that Jane Smith will lead its new infrastructure fund, a notable step.';
   const result = checkDraft({ body: lifted, claims: [{ sentence: lifted, fact_ids: ['S1'] }] }, { facts: release });
@@ -206,4 +211,51 @@ test('a page is split into citable passages without cutting sentences', () => {
   assert.ok(chunks.every((c) => /[.!?]$/.test(c.trim()) || c.endsWith('Home')), 'passages end on a sentence');
   assert.equal(chunkPassages(text, { maxChars: 300, maxChunks: 2 }).length, 2);
   assert.deepEqual(chunkPassages(''), []);
+});
+
+test('a rewrite weaves the associations into one story instead of a section for each', () => {
+  const grow = ['Kirkland & Ellis', 'New York', 'Litigation', 'White House', 'George W. Bush'].map((label) => ({ label }));
+  for (const relation of Object.keys(SOURCE_RELATIONS)) {
+    const outline = outlineFor('source_analysis', { entityName: 'Jay Lefkowitz', grow, relation });
+    assert.ok(outline.length <= 7, `${relation}: the structure does not grow with the number of associations`);
+    assert.ok(!outline.some((o) => /^Context:/.test(o)), relation);
+    assert.ok(outline[0].includes('Kirkland & Ellis'), `${relation}: the main association leads`);
+  }
+  assert.ok(outlineFor('source_analysis', { entityName: 'Jay Lefkowitz', grow, relation: 'by' }).some((o) => /argues/.test(o)));
+  assert.ok(outlineFor('source_analysis', { entityName: 'Jay Lefkowitz', grow, relation: 'about' }).some((o) => /credited by name to the original/.test(o)));
+});
+
+test('a rewrite made mostly of quotation is blocked', () => {
+  const quote = 'This fund reflects twenty years of work in public-private partnerships';
+  const heavy = checkDraft({ body: `Jane Smith said “${quote},” and repeated “${quote}.” She leads it.`, claims: [] }, { facts: release });
+  assert.ok(heavy.issues.some((i) => i.kind === 'quoted_share' && i.severity === 'block'));
+
+  const long = `“${'word '.repeat(60).trim()}”`;
+  assert.equal(quotationStats(long).longest, 60);
+  const body = `${'Plain prose written in the piece’s own words. '.repeat(60)}${long}`;
+  assert.ok(checkDraft({ body, claims: [] }, { facts: release }).issues.some((i) => i.kind === 'quote_too_long'));
+});
+
+test('only the main association has to lead the piece', () => {
+  const targets = [
+    { association_id: 1, label: 'Columbia Law School', terms: [] },
+    { association_id: 2, label: 'Kirkland & Ellis', terms: [] },
+  ];
+  const body = 'Jay Lefkowitz teaches at Columbia Law School.\n\nLater, Jay Lefkowitz became a partner at Kirkland & Ellis, and Jay Lefkowitz still lectures at Columbia Law School.';
+  const result = checkDraft({ title: 'Jay Lefkowitz at Columbia Law School', body, claims: [] }, { facts, targets, names });
+  assert.equal(result.targets[0].primary, true);
+  assert.equal(result.targets[1].primary, false);
+  assert.ok(!result.issues.some((i) => i.kind === 'target_not_leading'), JSON.stringify(result.issues));
+});
+
+test('the original article’s title and byline are read sensibly', () => {
+  assert.equal(cleanPageTitle('One moment, please...', 'Jay Lefkowitz: My Jewish Journey\nMore text follows here.'), 'Jay Lefkowitz: My Jewish Journey');
+  assert.equal(cleanPageTitle('Just a moment...', ''), null);
+  assert.equal(cleanPageTitle('Why school choice matters | WSJ', ''), 'Why school choice matters | WSJ');
+
+  const clientNames = ['Jay Lefkowitz', 'Jay P. Lefkowitz'];
+  assert.equal(detectBylineClient({ html: '<meta name="author" content="Jay P. Lefkowitz">', names: clientNames }), true);
+  assert.equal(detectBylineClient({ text: 'Why school choice matters\nBy Jay Lefkowitz\nMarch 3, 2024\nThe case for choice.', names: clientNames }), true);
+  assert.equal(detectBylineClient({ text: 'The firm, represented by Jay Lefkowitz, won the appeal.', names: clientNames }), false);
+  assert.equal(detectBylineClient({ text: 'By Jane Doe\nJay Lefkowitz spoke at the event.', names: clientNames }), false);
 });
