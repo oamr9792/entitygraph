@@ -5,26 +5,13 @@
  */
 
 // --- DOM helpers ------------------------------------------------------------
+// Defined in lib/dom.js so the metric layer can share them without a cycle.
 
-export function h(tag, attrs = {}, ...children) {
-  const el = document.createElement(tag);
-  for (const [key, value] of Object.entries(attrs ?? {})) {
-    if (value === null || value === undefined || value === false) continue;
-    if (key === 'class') el.className = value;
-    else if (key === 'html') el.innerHTML = value;
-    else if (key === 'style' && typeof value === 'object') Object.assign(el.style, value);
-    else if (key.startsWith('on') && typeof value === 'function') el.addEventListener(key.slice(2), value);
-    else if (key === 'dataset') Object.assign(el.dataset, value);
-    else el.setAttribute(key, value);
-  }
-  for (const child of children.flat(4)) {
-    if (child === null || child === undefined || child === false) continue;
-    el.append(child instanceof Node ? child : document.createTextNode(String(child)));
-  }
-  return el;
-}
+import { h, clear } from './lib/dom.js';
+import { resetTerms, bindTooltips, getMode, setMode, labelText, metricLabel } from './lib/metrics-ui.js';
+import { weakStatesBanner } from './lib/weak-states.js';
 
-export const clear = (el) => { while (el.firstChild) el.removeChild(el.firstChild); return el; };
+export { h, clear };
 
 export function toast(message, kind = '') {
   const el = h('div', { class: `toast ${kind}` }, message);
@@ -92,6 +79,10 @@ export function sentimentClass(sentiment) {
  * A sortable table. Sorting is client-side over the rows already fetched,
  * which is what §45 asks for ("allow sorting by every column") without a round
  * trip per click.
+ *
+ * A column with `metric` takes its header from the copy registry (§89) and
+ * carries that metric's tooltip; clicking the term opens the tooltip, clicking
+ * the rest of the header sorts.
  */
 export function sortableTable(columns, rows, { initialSort = null, initialDesc = true, footer = null } = {}) {
   let sortKey = initialSort ?? columns[0].key;
@@ -122,7 +113,7 @@ export function sortableTable(columns, rows, { initialSort = null, initialDesc =
                 else { sortKey = c.key; desc = true; }
                 render();
               },
-            }, c.label, sortKey === c.key ? h('span', { class: 'arrow' }, desc ? ' ▼' : ' ▲') : null)
+            }, c.metric ? metricLabel(c.metric) : c.label, sortKey === c.key ? h('span', { class: 'arrow' }, desc ? ' ▼' : ' ▲') : null)
           ))
         ),
         h('tbody', {}, sorted.map((row) => h('tr', {}, columns.map((c) =>
@@ -268,6 +259,10 @@ function matchRoute(path) {
 
 async function render() {
   runTeardowns();
+  // §92: one delegated tooltip binding for the life of the page, and a fresh
+  // "first use on this screen" record for every render.
+  bindTooltips();
+  resetTerms();
   const app = document.getElementById('app');
 
   // The gate. Nothing else renders without a session — not the shell, not the
@@ -326,32 +321,78 @@ async function render() {
 
 // --- Shell ------------------------------------------------------------------
 
+/**
+ * §88 — plain mode changes the nav, not the numbers. The analytical screens are
+ * one click away under "More screens" rather than gone, and the disclaimer, the
+ * weak-state notices and every denominator render the same in both modes.
+ */
 function shell(content, path) {
   const entityId = /^\/entities\/(\d+)/.exec(path)?.[1];
-  const link = (href, label) =>
-    h('a', { href: `#${href}`, class: path === href || path.startsWith(href + '/') ? 'active' : '' }, label);
+  const mode = getMode();
+  const plain = mode === 'plain';
+  const isActive = (href) => path === href || (href !== `/entities/${entityId}` && path.startsWith(href + '/'));
+  const link = (href, label) => h('a', { href: `#${href}`, class: isActive(href) ? 'active' : '' }, label);
+
+  const analytical = entityId
+    ? [
+        [`/entities/${entityId}/graph`, 'Graph'],
+        [`/entities/${entityId}/timeline`, 'Timeline'],
+        [`/entities/${entityId}/old-vs-current`, 'Old vs current'],
+        [`/entities/${entityId}/compare`, 'Compare'],
+        [`/entities/${entityId}/serp`, 'Google overlay'],
+        [`/entities/${entityId}/gaps`, 'Gaps & priorities'],
+      ]
+    : [];
+
+  let entityNav = [];
+  if (entityId) {
+    const essentials = [
+      link(`/entities/${entityId}/summary`, 'Summary'),
+      link(`/entities/${entityId}`, 'Dashboard'),
+    ];
+    const upkeep = [
+      link(`/entities/${entityId}/review`, plain ? 'Same person?' : 'Review queue'),
+      link(`/entities/${entityId}/identity`, plain ? 'Markers' : 'Identity profile'),
+      link(`/entities/${entityId}/jobs`, 'Jobs & cost'),
+    ];
+    const more = analytical.map(([href, label]) => link(href, label));
+    entityNav = [
+      h('div', { class: 'group-label' }, 'This client'),
+      ...essentials,
+      ...(plain
+        ? [
+            ...upkeep,
+            h('details', { class: 'more', open: analytical.some(([href]) => isActive(href)) ? 'open' : null },
+              h('summary', { class: 'more-link' }, 'More screens'),
+              ...more),
+          ]
+        : [...more, ...upkeep]),
+    ];
+  }
+
+  const modeToggle = h('div', { class: 'mode-toggle', role: 'group', 'aria-label': 'Label style' },
+    [['plain', 'Plain'], ['advanced', 'Advanced']].map(([value, label]) =>
+      h('button', {
+        type: 'button',
+        class: mode === value ? 'active' : '',
+        'aria-pressed': mode === value ? 'true' : 'false',
+        onclick: () => { if (getMode() !== value) { setMode(value); render(); } },
+      }, label)));
 
   return h('div', { class: 'shell' },
     h('aside', { class: 'sidebar' },
       h('div', { class: 'brand' }, '◕', h('div', {}, 'EntityGraph', h('small', {}, 'Association Intelligence'))),
       h('nav', { class: 'nav' },
-        link('/', 'Entities'),
-        link('/new', 'New entity'),
-        entityId ? h('div', { class: 'group-label' }, 'This entity') : null,
-        entityId ? link(`/entities/${entityId}`, 'Dashboard') : null,
-        entityId ? link(`/entities/${entityId}/graph`, 'Graph') : null,
-        entityId ? link(`/entities/${entityId}/timeline`, 'Timeline') : null,
-        entityId ? link(`/entities/${entityId}/old-vs-current`, 'Old vs current') : null,
-        entityId ? link(`/entities/${entityId}/compare`, 'Compare') : null,
-        entityId ? link(`/entities/${entityId}/serp`, 'Google overlay') : null,
-        entityId ? link(`/entities/${entityId}/gaps`, 'Gaps & priorities') : null,
-        entityId ? link(`/entities/${entityId}/review`, 'Review queue') : null,
-        entityId ? link(`/entities/${entityId}/identity`, 'Identity profile') : null,
-        entityId ? link(`/entities/${entityId}/jobs`, 'Jobs & cost') : null,
-        h('div', { class: 'group-label' }, 'System'),
+        link('/', plain ? 'Clients' : 'Entities'),
+        link('/quickstart', 'Quickstart'),
+        plain ? null : link('/new', 'New entity'),
+        ...entityNav,
+        h('div', { class: 'group-label' }, 'Help & system'),
+        link('/glossary', 'Glossary'),
         link('/settings', 'Settings & model')
       ),
       h('div', { class: 'sidebar-foot' },
+        modeToggle,
         h('div', { class: 'signed-in' },
           h('span', { class: 'who', title: state.user?.email ?? '' }, state.user?.name ?? state.user?.email ?? ''),
           h('button', {
@@ -364,10 +405,13 @@ function shell(content, path) {
             },
           }, 'Sign out')
         ),
-        h('div', { class: 'small dim' }, 'PIAS is an external estimate. It is not a Google score.')
+        h('div', { class: 'small dim' }, `${labelText('pias')} is an external estimate. It is not a Google score.`)
       )
     ),
-    h('main', { class: 'main' }, content)
+    h('main', { class: 'main' },
+      // §94 — above every entity screen, in both modes.
+      entityId ? weakStatesBanner(entityId) : null,
+      content)
   );
 }
 
@@ -379,8 +423,12 @@ export const disclaimer = (text) =>
 
 route('/', () => import('./views/portfolio.js').then((m) => m.portfolioView));
 route('/new', () => import('./views/portfolio.js').then((m) => m.newEntityView));
+route('/quickstart', () => import('./views/quickstart.js').then((m) => m.quickstartView));
+route('/quickstart/:id', () => import('./views/quickstart.js').then((m) => m.quickstartView));
+route('/glossary', () => import('./views/glossary.js').then((m) => m.glossaryView));
 route('/settings', () => import('./views/settings.js').then((m) => m.settingsView));
 route('/entities/:id', () => import('./views/entity.js').then((m) => m.dashboardView));
+route('/entities/:id/summary', () => import('./views/summary.js').then((m) => m.summaryView));
 route('/entities/:id/graph', () => import('./views/graph.js').then((m) => m.graphView));
 route('/entities/:id/timeline', () => import('./views/graph.js').then((m) => m.timelineView));
 route('/entities/:id/old-vs-current', () => import('./views/compare.js').then((m) => m.oldVsCurrentView));

@@ -1,20 +1,20 @@
-import { h, api, fmt, disclaimer, navigate, sortableTable } from '../app.js';
-import { timeControl } from './entity.js';
+import { h, api, fmt, disclaimer, navigate } from '../app.js';
+import { metricLabel, scoreWithBasis, labelText } from '../lib/metrics-ui.js';
 
 /** §50 — historical state beside current state, split at a chosen date. */
 export async function oldVsCurrentView({ params, query }) {
   const cutoff = query.get('cutoff') ?? '';
   const data = await api(`/api/entities/${params.id}/old-vs-current${cutoff ? `?cutoff=${cutoff}` : ''}`);
+  const pages = labelText('documents').toLowerCase();
 
   const input = h('input', { type: 'date', value: (data.cutoff ?? '').slice(0, 10), style: { width: '11rem' } });
-  const column = (title, rows, note) => h('div', { class: 'panel' },
-    h('h2', {}, title, h('span', { class: 'small dim' }, note)),
+  const column = (title, key, rows) => h('div', { class: 'panel' },
+    h('h2', {}, title, h('span', { class: 'small dim' }, ' ', metricLabel(key))),
     h('div', { class: 'panel-body tight' },
       rows.length
         ? h('table', {}, h('tbody', {}, rows.map((r) => h('tr', {},
             h('td', {}, h('a', { href: `#/associations/${r.association_id}` }, r.label)),
-            h('td', { class: 'num score-cell' }, fmt.score(r.score)),
-            h('td', { class: 'num dim small' }, `${fmt.n(r.documents)} docs`)
+            h('td', { class: 'num' }, scoreWithBasis(key, r.score, { documents: r.documents }))
           ))))
         : h('div', { class: 'empty' }, 'Nothing in this window.')
     )
@@ -30,11 +30,11 @@ export async function oldVsCurrentView({ params, query }) {
       h('span', { class: 'small muted' }, 'Cutoff'),
       input,
       h('button', { onclick: () => navigate(`#/entities/${params.id}/old-vs-current?cutoff=${input.value}`) }, 'Apply'),
-      h('span', { class: 'small dim' }, `${fmt.n(data.historical_documents)} documents before · ${fmt.n(data.current_documents)} after`)
+      h('span', { class: 'small dim' }, `${fmt.n(data.historical_documents)} ${pages} before · ${fmt.n(data.current_documents)} after`)
     ),
     h('div', { class: 'split-2' },
-      column('Historical entity state', data.historical, ' HAS'),
-      column('Current entity state', data.current, ' CES')
+      column('Historical entity state', 'historical_pias', data.historical),
+      column('Current entity state', 'current_pias', data.current)
     ),
     data.replaced?.length || data.emerged?.length
       ? h('div', { class: 'panel' },
@@ -87,6 +87,8 @@ export async function compareView({ params, query }) {
     return h('div', {}, controls, h('div', { class: 'panel' }, h('div', { class: 'empty' }, data.error)));
   }
 
+  // The count rows sit in the same table as the score rows, so every score here
+  // is read against its denominator (§93) without repeating it in each cell.
   return h('div', {},
     h('div', { class: 'page-head' },
       h('div', {}, h('h1', {}, data.associations.map((a) => a.label).join('  vs  ')),
@@ -101,7 +103,7 @@ export async function compareView({ params, query }) {
             data.associations.map((a) => h('th', { class: 'no-sort num' }, a.label))
           )),
           h('tbody', {}, data.rows.map((row) => h('tr', {},
-            h('td', { class: 'muted' }, row.metric),
+            h('td', { class: 'muted' }, metricLabel(row.metric_key)),
             row.values.map((v) => h('td', { class: 'num' }, String(v)))
           )))
         )
@@ -111,7 +113,7 @@ export async function compareView({ params, query }) {
 }
 
 /** §59, §60 — gap finder and campaign priorities. */
-export async function gapsView({ params, query }) {
+export async function gapsView({ params }) {
   const data = await api(`/api/entities/${params.id}/gaps`);
 
   const list = (title, rows, note) => h('div', { class: 'panel' },
@@ -121,9 +123,9 @@ export async function gapsView({ params, query }) {
         ? h('table', {}, h('tbody', {}, rows.map((r) => h('tr', {},
             h('td', {}, h('a', { href: `#/associations/${r.association_id}` }, r.label),
               h('div', { class: 'small dim' }, r.reason ?? r.note ?? '')),
-            h('td', { class: 'num' }, h('span', { class: 'score-cell' }, fmt.score(r.current_pias)),
-              h('div', { class: 'small dim' }, 'current')),
-            h('td', { class: 'num dim small' }, `${fmt.n(r.domains)} domains`)
+            h('td', { class: 'num' },
+              scoreWithBasis('current_pias', r.current_pias, { documents: r.current_documents }, { compact: true })),
+            h('td', { class: 'num dim small' }, `${fmt.n(r.domains)} `, metricLabel('domains'))
           ))))
         : h('div', { class: 'empty' }, 'Nothing in this bucket.')
     )

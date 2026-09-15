@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
+import { DISCLAIMERS } from './copy/metrics.js';
 
 export const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -193,10 +194,17 @@ export const MODEL = {
   // §39/§49 — the window that counts as "current".
   currentWindowDays: 365,
 
+  // §95 — plain display bands for association strength. Display only: a band
+  // is a reading aid for one client's list, never an input to any score.
+  bands: { dominant: 75, strong: 50, present: 25 },
+
   // §40 — momentum buckets.
   momentum: {
     periodDays: 90,
     thresholds: { rapid_up: 1.0, up: 0.2, down: -0.2, rapid_down: -0.5 },
+    // §94 — below this many documents across the two periods compared,
+    // movement is noise, and a dash is shown instead of a percentage.
+    minDocuments: 5,
   },
 
   // §53 — SERP rank weights for the Google Retrieval Score.
@@ -271,7 +279,6 @@ export const config = {
  * there is exactly one copy of the wording and every surface renders the same
  * sentence.
  */
-export const SCORE_DISCLAIMER =
-  'This is an external estimate of entity-association strength. It does not expose Google’s internal Knowledge Graph or ranking scores.';
+export const SCORE_DISCLAIMER = DISCLAIMERS.external_estimate;
 
 export default config;

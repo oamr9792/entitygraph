@@ -1,4 +1,5 @@
-import { h, api, fmt, sortableTable, disclaimer, navigate, sentimentClass, buildStatus, clear } from '../app.js';
+import { h, api, fmt, sortableTable, disclaimer, navigate, buildStatus, clear } from '../app.js';
+import { metricLabel, labelText, scoreWithBasis, momentumCell, bandChip, bandNote } from '../lib/metrics-ui.js';
 
 /** §49 — the global time control, shared by every screen that takes a window. */
 export function timeControl(query, { extra = null } = {}) {
@@ -37,8 +38,6 @@ export function timeControl(query, { extra = null } = {}) {
     extra
   );
 }
-
-const arrow = (m) => h('span', { class: `trend ${m.bucket}`, title: `${m.label} (${fmt.change(m.basis)})` }, m.arrow);
 
 /**
  * Shown in place of the dashboard when there is nothing to draw.
@@ -117,6 +116,8 @@ function diagnosisPanel(entityId) {
   return panel;
 }
 
+const olderDocuments = (r) => (r ? Math.max(0, (r.documents ?? 0) - (r.current_documents ?? 0)) : null);
+
 /** §44/§45 — the dashboard. */
 export async function dashboardView({ params, query }) {
   const search = new URLSearchParams();
@@ -137,16 +138,27 @@ export async function dashboardView({ params, query }) {
     );
   }
 
-  const stat = (label, value, note = null, score = false) =>
+  const byLabel = new Map(board.associations.map((r) => [r.label, r]));
+  const firstPage = board.serp?.first_page_results ?? 0;
+
+  const stat = (label, value, note = null) =>
     h('div', { class: 'stat' },
       h('div', { class: 'label' }, label),
       h('div', { class: 'value' }, value ?? '—'),
       note ? h('div', { class: 'note' }, note) : null
     );
 
+  // §93: the headline scores carry the count of pages behind them, the same as
+  // the leaderboard rows they are drawn from.
+  const dominantNote = (key, entry, documents) => (entry
+    ? h('span', {}, metricLabel(key), ' ', scoreWithBasis(key, entry.score, { documents }, { compact: true }))
+    : null);
+
   const stateRow = h('div', { class: 'grid cols-5' },
-    stat('Historical dominant', state?.historical_dominant?.label, `HAS ${fmt.score(state?.historical_dominant?.score)}`),
-    stat('Current dominant', state?.current_dominant?.label, `CES ${fmt.score(state?.current_dominant?.score)}`),
+    stat('Historical dominant', state?.historical_dominant?.label,
+      dominantNote('historical_pias', state?.historical_dominant, olderDocuments(byLabel.get(state?.historical_dominant?.label)))),
+    stat('Current dominant', state?.current_dominant?.label,
+      dominantNote('current_pias', state?.current_dominant, byLabel.get(state?.current_dominant?.label)?.current_documents ?? null)),
     stat('Fastest growing', state?.fastest_growing?.label, `${state?.fastest_growing?.change ?? ''} ${state?.fastest_growing?.arrow ?? ''}`),
     stat('Most recent', state?.most_recent?.label, state?.most_recent?.age ? `${state.most_recent.age} ago` : null),
     stat('Current-state change',
@@ -165,54 +177,48 @@ export async function dashboardView({ params, query }) {
     },
     { key: 'category', label: 'Category', render: (r) => h('span', { class: 'dim small' }, r.category) },
     {
-      key: 'pias', label: 'PIAS', num: true, title: 'Patent-Inspired Association Score, lifetime (§33)',
-      render: (r) => h('span', { class: 'score-cell' }, fmt.score(r.pias)),
+      key: 'pias', metric: 'pias', num: true,
+      render: (r) => h('div', {},
+        scoreWithBasis('pias', r.pias, { sources: r.independent_sources, documents: r.documents }, { compact: true }),
+        bandChip(r.band)),
     },
     {
-      key: 'current_pias', label: 'Current', num: true, title: 'Current Entity Score — same model, current window only (§39)',
-      render: (r) => h('span', { class: 'score-cell' }, fmt.score(r.current_pias)),
+      key: 'current_pias', metric: 'current_pias', num: true,
+      render: (r) => scoreWithBasis('current_pias', r.current_pias, { documents: r.current_documents }, { compact: true }),
     },
     {
-      key: 'historical_pias', label: 'Historical', num: true, title: 'Historical Association Score — evidence older than the current window',
-      render: (r) => h('span', { class: 'score-cell dim' }, fmt.score(r.historical_pias)),
+      key: 'historical_pias', metric: 'historical_pias', num: true,
+      render: (r) => h('span', { class: 'dim' },
+        scoreWithBasis('historical_pias', r.historical_pias, { documents: olderDocuments(r) }, { compact: true })),
     },
-    { key: 'documents', label: 'Docs', num: true, render: (r) => fmt.n(r.documents) },
-    { key: 'domains', label: 'Domains', num: true, render: (r) => fmt.n(r.domains) },
+    { key: 'documents', metric: 'documents', num: true, render: (r) => fmt.n(r.documents) },
+    { key: 'domains', metric: 'domains', num: true, render: (r) => fmt.n(r.domains) },
+    { key: 'independent_sources', metric: 'independent_sources', num: true, render: (r) => fmt.score(r.independent_sources) },
+    { key: 'current_corpus_share', metric: 'current_corpus_share', num: true, render: (r) => fmt.pct(r.current_corpus_share) },
     {
-      key: 'independent_sources', label: 'Ind. sources', num: true,
-      title: 'Documents after duplicate and syndication adjustment (§22, §23)',
-      render: (r) => fmt.score(r.independent_sources),
-    },
-    {
-      key: 'current_corpus_share', label: 'Current share', num: true,
-      title: 'Share of current-window documents about this entity that carry this association (§37, §39)',
-      render: (r) => fmt.pct(r.current_corpus_share),
-    },
-    {
-      key: 'median_age', label: 'Median age', num: true, sortValue: (r) => r.freshness.median_age_days,
+      key: 'median_age', metric: 'median_age', num: true, sortValue: (r) => r.freshness.median_age_days,
       render: (r) => h('span', { class: 'dim' }, r.freshness.median_age ?? '—'),
     },
     {
-      key: 'momentum', label: 'Momentum', num: true, sortValue: (r) => r.momentum.basis ?? -99,
-      title: 'Share-adjusted change over the last period versus the one before (§40, §41)',
-      render: (r) => arrow(r.momentum),
+      key: 'momentum', metric: 'momentum', num: true,
+      sortValue: (r) => (r.momentum.below_floor ? null : r.momentum.basis ?? -99),
+      render: (r) => momentumCell(r.momentum),
     },
     {
-      key: 'sentiment', label: 'Sentiment', sortValue: (r) => r.sentiment.label,
-      title: 'Reported beside strength, never inside it (§43)',
+      key: 'sentiment', metric: 'sentiment', sortValue: (r) => r.sentiment.label,
       render: (r) => h('span', { class: `sentiment ${r.sentiment.label}` }, r.sentiment.label),
     },
     {
-      key: 'google_retrieval_score', label: 'Google', num: true,
-      title: 'Google Retrieval Score — share of classified first-page weight (§53). Not an internal Google metric.',
-      render: (r) => (r.google_retrieval_score === null ? h('span', { class: 'dim' }, '—') : fmt.score(r.google_retrieval_score)),
+      key: 'google_retrieval_score', metric: 'google_retrieval_score', num: true,
+      render: (r) => scoreWithBasis('google_retrieval_score', r.google_retrieval_score,
+        { results: r.google_results ?? 0, total: firstPage }, { compact: true }),
     },
   ];
 
   const table = sortableTable(columns, board.associations, { initialSort: 'pias' });
 
   const coveragePanel = h('div', { class: 'panel' },
-    h('h2', {}, 'Coverage confidence', h('span', { class: `level ${coverage.level}` }, coverage.level)),
+    h('h2', {}, metricLabel('coverage_confidence'), h('span', { class: `level ${coverage.level}` }, coverage.level)),
     h('div', { class: 'panel-body' },
       h('ul', { class: 'criteria' }, coverage.criteria.map((c) =>
         h('li', {},
@@ -225,7 +231,7 @@ export async function dashboardView({ params, query }) {
   );
 
   const narrativePanel = h('div', { class: 'panel' },
-    h('h2', {}, 'Summary'),
+    h('h2', {}, 'In brief'),
     h('div', { class: 'panel-body narrative' },
       narrative ? narrative.sentences.map((s) => h('p', {}, s)) : h('p', { class: 'dim' }, 'Not enough data to summarise.')
     )
@@ -244,14 +250,17 @@ export async function dashboardView({ params, query }) {
       )
     : null;
 
+  const pages = labelText('documents').toLowerCase();
+
   return h('div', {},
     h('div', { class: 'page-head' },
       h('div', {},
         h('h1', {}, board.entity.canonical_name),
         h('div', { class: 'sub' },
-          `${fmt.n(board.entity_documents)} accepted documents · ${fmt.n(board.current_entity_documents)} in the current ${Math.round(board.current_window_days / 30.44)} months · half-life ${board.half_life_days}d`)
+          `${fmt.n(board.entity_documents)} accepted ${pages} · ${fmt.n(board.current_entity_documents)} in the current ${Math.round(board.current_window_days / 30.44)} months · half-life ${board.half_life_days}d`)
       ),
       h('div', { class: 'toolbar' },
+        h('button', { class: 'primary', onclick: () => navigate(`#/entities/${params.id}/summary`) }, 'Summary'),
         h('a', { class: 'btn', href: `/api/entities/${params.id}/leaderboard?format=csv${query.get('window') ? `&window=${query.get('window')}` : ''}` }, 'Export CSV'),
         h('button', { onclick: () => navigate(`#/entities/${params.id}/jobs`) }, 'Rebuild')
       )
@@ -270,8 +279,8 @@ export async function dashboardView({ params, query }) {
     h('div', { style: { height: '1.1rem' } }),
     timeControl(query),
     h('div', { class: 'panel' },
-      h('h2', {}, 'Association leaderboard', h('span', { class: 'small dim' }, 'click any column to sort')),
-      h('div', { class: 'panel-body tight' }, table)
+      h('h2', {}, 'Association leaderboard', h('span', { class: 'small dim' }, 'click a column to sort · click a term for its meaning')),
+      h('div', { class: 'panel-body tight' }, table, h('div', { style: { padding: '0 0.7rem 0.7rem' } }, bandNote()))
     ),
     alertsPanel,
     h('div', { class: 'grid cols-2' }, narrativePanel, coveragePanel)

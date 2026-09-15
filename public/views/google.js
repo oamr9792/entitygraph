@@ -1,4 +1,5 @@
 import { h, api, fmt, clear } from '../app.js';
+import { metricLabel } from '../lib/metrics-ui.js';
 
 /**
  * "What Google associates" — the panel at the top of the dashboard.
@@ -35,9 +36,9 @@ export function googlePanel(entityId) {
         body.append(h('table', {},
           h('thead', {}, h('tr', {},
             h('th', {}, 'Association'),
-            h('th', { class: 'num', title: 'Organic results that carry it, of all organic results captured' }, 'Results'),
-            h('th', { class: 'num' }, 'Top 10'),
-            h('th', { class: 'num' }, 'Best rank'),
+            h('th', { class: 'num' }, metricLabel('organic_results')),
+            h('th', { class: 'num' }, metricLabel('top10_results')),
+            h('th', { class: 'num' }, metricLabel('best_rank')),
             h('th', {}, 'Also on Google as')
           )),
           h('tbody', {}, g.associations.map((a) => h('tr', {},

@@ -1,5 +1,6 @@
 import { all, get } from '../db.js';
 import { MODEL, SCORE_DISCLAIMER } from '../config.js';
+import { DISCLAIMERS } from '../copy/metrics.js';
 import { leaderboard, entityDocumentCount } from './metrics.js';
 import { relatedAssociations } from './related.js';
 import { median, round, safeDiv, ageDays, humanAge, clamp } from '../util/stats.js';
@@ -108,8 +109,7 @@ export function actionPlan(associationId, { targetShare = null, now = Date.now()
 
   return {
     disclaimer: SCORE_DISCLAIMER,
-    simulation_disclaimer:
-      'These projections describe this tool’s own association metric under the stated assumptions. They are not predictions of Google rankings, and no part of this model can see Google’s retrieval.',
+    simulation_disclaimer: DISCLAIMERS.simulation,
     association: {
       id: row.association_id,
       label: row.label,
@@ -120,6 +120,7 @@ export function actionPlan(associationId, { targetShare = null, now = Date.now()
     entity: board.entity,
     current: {
       pias: row.pias,
+      band: row.band,
       current_pias: row.current_pias,
       historical_pias: row.historical_pias,
       documents: row.documents,
@@ -129,6 +130,9 @@ export function actionPlan(associationId, { targetShare = null, now = Date.now()
       corpus_share: row.corpus_share,
       current_corpus_share: row.current_corpus_share,
       google_retrieval_score: row.google_retrieval_score,
+      // §93: the retrieval score is shown with the results behind it.
+      google_results: row.google_results ?? 0,
+      first_page_results: board.serp?.first_page_results ?? 0,
       momentum: row.momentum,
       freshness: row.freshness,
     },

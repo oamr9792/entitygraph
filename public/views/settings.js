@@ -1,4 +1,5 @@
 import { h, api, fmt, disclaimer } from '../app.js';
+import { metricLabel, labelText, DISCLAIMERS, METRICS, BANDS, BAND_ORDER } from '../lib/metrics-ui.js';
 
 /**
  * Settings is mostly a read-out. Credentials live in .env, not in the
@@ -46,6 +47,7 @@ export async function settingsView() {
     )
   );
 
+  const bands = settings.model.bands ?? {};
   const rows = [
     ['Entity confidence — accept', settings.model.entityConfidence.accept, 'Documents below this do not affect scoring (§8).'],
     ['Entity confidence — review', settings.model.entityConfidence.review, 'Between review and accept goes to a human.'],
@@ -54,6 +56,9 @@ export async function settingsView() {
     ['Recency half-life (days)', settings.model.recency.halfLifeDays, '0.5 ^ (age / half-life) (§30). Not a Google curve.'],
     ['Current window (days)', settings.model.currentWindowDays, 'What counts as "current" (§39).'],
     ['Momentum period (days)', settings.model.momentum.periodDays, 'Compared against the preceding period (§40).'],
+    ['Momentum — minimum documents', settings.model.momentum.minDocuments, 'Below this in either period, momentum is shown as a dash rather than an arrow (§94).'],
+    ['Bands — lower bounds', BAND_ORDER.filter((b) => b in bands).map((b) => `${BANDS[b].plain} ${bands[b]}`).join(' · '),
+      'Display grouping only; feeds no calculation (§95).'],
     ['Independence — first on domain', settings.model.independence.first_unique_on_domain, '§22, and these are modelling assumptions, not Google weights.'],
     ['Independence — additional on domain', settings.model.independence.additional_unique_on_domain, ''],
     ['Independence — syndicated elsewhere', settings.model.independence.syndicated_other_domain, ''],
@@ -64,6 +69,8 @@ export async function settingsView() {
 
   const piasRows = Object.entries(settings.model.pias).map(([k, v]) =>
     h('tr', {}, h('td', {}, k), h('td', { class: 'num score-cell' }, fmt.pct(v))));
+
+  const strength = labelText('pias');
 
   return h('div', {},
     h('div', { class: 'page-head' }, h('div', {}, h('h1', {}, 'Settings & model'),
@@ -79,12 +86,12 @@ export async function settingsView() {
     providersPanel,
     h('div', { class: 'split-2' },
       h('div', { class: 'panel' },
-        h('h2', {}, 'PIAS composition (§33)'),
+        h('h2', {}, metricLabel('pias'), ' — composition (§33)'),
         h('div', { class: 'panel-body tight' },
           h('table', {}, h('tbody', {}, piasRows)),
           h('p', { class: 'small dim', style: { padding: '0.7rem', marginBottom: 0 } },
             'Each component is normalised 0–100 against the strongest association for the same entity, then weighted. ' +
-            'PIAS therefore ranks associations within one entity; comparing PIAS across entities is meaningless.')
+            `${strength} therefore ranks associations within one entity; comparing it across entities is meaningless.`)
         )
       ),
       h('div', { class: 'panel' },
@@ -100,10 +107,12 @@ export async function settingsView() {
     h('div', { class: 'panel' },
       h('h2', {}, 'What this tool does not claim'),
       h('div', { class: 'panel-body narrative' },
-        h('p', {}, 'PIAS approximates factors described in Google patents (US10198491B1, US8682913B1, US9830390B2, US9336211B1, US9189526B1) using observable web data. Google’s internal weights are unknown and are not reproduced here.'),
-        h('p', {}, 'The source reliability figure is an External Source Reliability Proxy built from domain rank, URL rank, citation prominence and a source classification. It is not Domain Authority and it is not a measure of Google’s trust.'),
-        h('p', {}, 'The query-behaviour variable described in US9830390B2 — later searches involving related entities — is not observable from outside Google. It is stored as null and never estimated.'),
-        h('p', { style: { marginBottom: 0 } }, 'The Google Retrieval Score measures what Google’s first page currently surfaces, as classified by this tool. It is not an internal Google metric, and a gap between it and the corpus is an observation, not a prediction.')
+        h('p', {}, DISCLAIMERS.external_estimate),
+        h('p', {}, DISCLAIMERS.source_reliability),
+        h('p', {}, DISCLAIMERS.query_behavior),
+        h('p', { style: { marginBottom: 0 } }, METRICS.google_retrieval_score.caveat ?? ''),
+        h('p', { class: 'small dim', style: { marginBottom: 0, marginTop: '0.7rem' } },
+          'Every definition is in the ', h('a', { href: '#/glossary' }, 'glossary'), '.')
       )
     )
   );

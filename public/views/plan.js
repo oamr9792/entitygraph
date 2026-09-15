@@ -1,4 +1,6 @@
-import { h, api, fmt, disclaimer, navigate, clear } from '../app.js';
+import { h, api, fmt, disclaimer, navigate } from '../app.js';
+import { metricLabel, scoreWithBasis, bandChip, bandNote } from '../lib/metrics-ui.js';
+import { weakStatesBanner } from '../lib/weak-states.js';
 
 /**
  * §57–§60 — the action plan for one association.
@@ -104,7 +106,11 @@ export async function planView({ params }) {
     )
   );
 
+  const c = plan.current;
+  const olderDocuments = Math.max(0, (c.documents ?? 0) - (c.current_documents ?? 0));
+
   return h('div', {},
+    weakStatesBanner(plan.entity.id),
     h('div', { class: 'page-head' },
       h('div', {},
         h('h1', {}, plan.association.label),
@@ -121,13 +127,24 @@ export async function planView({ params }) {
     disclaimer(plan.disclaimer),
 
     h('div', { class: 'grid cols-5' },
-      stat('PIAS', fmt.score(plan.current.pias), 'lifetime'),
-      stat('Current', fmt.score(plan.current.current_pias), `${fmt.pct(plan.current.current_corpus_share)} of current corpus`),
-      stat('Independent domains', fmt.n(plan.current.domains), `${plan.character.top_tier_domains} high-authority`),
-      stat('Median age', plan.character.median_age, `${fmt.n(plan.current.current_documents)} in current window`),
-      stat('Google retrieval', plan.current.google_retrieval_score === null ? '—' : fmt.score(plan.current.google_retrieval_score),
-        plan.retrieval.measurable ? `gap ${plan.retrieval.gap > 0 ? '+' : ''}${plan.retrieval.gap}` : 'no SERP snapshot')
+      stat(metricLabel('pias'),
+        scoreWithBasis('pias', c.pias, { sources: c.independent_sources, documents: c.documents }, { compact: true }),
+        h('span', {}, 'older: ', scoreWithBasis('historical_pias', c.historical_pias, { documents: olderDocuments }, { compact: true }))),
+      stat(metricLabel('current_pias'),
+        scoreWithBasis('current_pias', c.current_pias, { documents: c.current_documents }, { compact: true }),
+        h('span', {}, `${fmt.pct(c.current_corpus_share)} `, metricLabel('current_corpus_share'))),
+      stat(metricLabel('domains'), fmt.n(c.domains),
+        h('span', {}, `${plan.character.top_tier_domains} `, metricLabel('high_authority_domains'))),
+      stat(metricLabel('median_age'), plan.character.median_age, `${fmt.n(c.current_documents)} in current window`),
+      stat(metricLabel('google_retrieval_score'),
+        scoreWithBasis('google_retrieval_score', c.google_retrieval_score,
+          { results: c.google_results ?? 0, total: c.first_page_results ?? 0 }, { compact: true }),
+        plan.retrieval.measurable
+          ? h('span', {}, metricLabel('retrieval_gap'), ` ${plan.retrieval.gap > 0 ? '+' : ''}${plan.retrieval.gap}`)
+          : 'no Google snapshot')
     ),
+
+    c.band ? h('div', {}, bandChip(c.band), bandNote()) : null,
 
     h('div', { style: { height: '1.1rem' } }),
 
@@ -137,13 +154,13 @@ export async function planView({ params }) {
         h('p', { class: 'interpretation' }, plan.character.reasoning),
         h('div', { class: 'diagnosis-counts' },
           [
-            ['independent domains', plan.character.distinct_domains],
-            ['high-authority domains', plan.character.top_tier_domains],
-            ['directly stated', `${Math.round(plan.character.direct_relationship_share * 100)}%`],
-            ['on one domain', `${Math.round(plan.character.top_domain_share * 100)}%`],
-            ['entity confidence', plan.character.mean_entity_confidence],
-          ].map(([label, value]) =>
-            h('div', { class: 'count' }, h('span', { class: 'n' }, String(value)), h('span', { class: 'l' }, label)))
+            ['domains', plan.character.distinct_domains],
+            ['high_authority_domains', plan.character.top_tier_domains],
+            ['direct_statement_share', `${Math.round(plan.character.direct_relationship_share * 100)}%`],
+            ['top_domain_share', `${Math.round(plan.character.top_domain_share * 100)}%`],
+            ['entity_confidence', plan.character.mean_entity_confidence],
+          ].map(([key, value]) =>
+            h('div', { class: 'count' }, h('span', { class: 'n' }, String(value)), h('span', { class: 'l' }, metricLabel(key))))
         )
       )
     ),
@@ -161,7 +178,7 @@ export async function planView({ params }) {
           h('table', {},
             h('thead', {}, h('tr', {},
               h('th', {}, 'Horizon'),
-              h('th', { class: 'num', title: 'Share of today’s recency-weighted evidence still counting' }, 'Weight left'),
+              h('th', { class: 'num' }, metricLabel('weight_remaining')),
               h('th', { class: 'num' }, 'Docs in window')
             )),
             h('tbody', {}, decayRows)

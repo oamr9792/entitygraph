@@ -286,7 +286,9 @@ export function retrievalOverlay(entityId, { snapshotId = null } = {}) {
       label: labels.get(Number(id)) ?? `#${id}`,
       weight: v.weight,
       google_retrieval_score: v.grs,
+      results: v.results,
     })).sort((a, b) => b.google_retrieval_score - a.google_retrieval_score),
+    first_page_results: scores.first_page_results,
     classified_weight: scores.classified_weight,
     total_weight: scores.total_weight,
     unclassified_share: scores.unclassified_share,
@@ -304,19 +306,23 @@ export function retrievalGap(entityId, leaderboardRows) {
 
   const rows = leaderboardRows.map((row) => {
     const grs = grsByAssociation.get(row.association_id) ?? 0;
-    // Both sides are shares of their own total, so they are comparable:
-    // current_association_share sums to 1 across associations, and GRS sums to
-    // 100 across the classified first page. Corpus share (§37, share of
-    // documents) is reported alongside but is not the basis of the gap — its
-    // shares sum past 100% because one document supports several associations.
-    const corpusShare = (row.current_association_share ?? 0) * 100;
+    // Like with like. GRS is the share of first-page weight that *carries* the
+    // association (§53, summed, not divided), so a result carrying two
+    // associations counts for both and scores do not sum to 100. Its corpus
+    // counterpart is the share of recent documents that carry the association
+    // (§37/§39), which is non-exclusive in exactly the same way. Comparing GRS
+    // with an exclusive share that sums to 100 made every association look
+    // over-shown by Google.
+    const corpusShare = (row.current_corpus_share ?? 0) * 100;
     return {
       association_id: row.association_id,
       label: row.label,
       current_pias: row.current_pias,
       historical_pias: row.historical_pias,
-      current_association_share_pct: round(corpusShare, 1),
-      current_corpus_share_pct: round((row.current_corpus_share ?? 0) * 100, 1),
+      current_corpus_share_pct: round(corpusShare, 1),
+      documents: row.documents,
+      current_documents: row.current_documents,
+      google_results: row.google_results ?? null,
       google_retrieval_score: grs,
       // Positive: Google surfaces more of this than the current web carries.
       // Negative: the current web has moved on and Google has not caught up.

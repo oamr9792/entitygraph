@@ -99,27 +99,29 @@ export function compareAssociations(entityId, associationIds, options = {}) {
     .filter(Boolean);
   if (rows.length < 2) return { error: 'select at least two associations that exist for this entity' };
 
+  // Keyed to the copy registry (§89) rather than labelled here, so the screen
+  // shows the plain or advanced name from the one definition of each metric.
   const fields = [
-    ['Lifetime documents', (r) => r.documents],
-    ['Current-window documents', (r) => r.current_documents],
-    ['Independent domains', (r) => r.domains],
-    ['Independent sources (weighted)', (r) => r.independent_sources],
-    ['Current corpus share', (r) => pct(r.current_corpus_share)],
-    ['Lifetime corpus share', (r) => pct(r.corpus_share)],
-    ['Median age', (r) => r.freshness.median_age ?? '—'],
-    ['Evidence under 365 days', (r) => pct(r.freshness.evidence_share_under_365d)],
-    ['PIAS', (r) => r.pias],
-    ['Current PIAS', (r) => r.current_pias],
-    ['Historical PIAS', (r) => r.historical_pias],
-    ['Google Retrieval Score', (r) => r.google_retrieval_score ?? '—'],
-    ['Momentum', (r) => `${r.momentum.arrow} ${r.momentum.label}`],
-    ['Sentiment', (r) => r.sentiment.label],
+    ['documents', (r) => r.documents],
+    ['current_documents', (r) => r.current_documents],
+    ['domains', (r) => r.domains],
+    ['independent_sources', (r) => r.independent_sources],
+    ['current_corpus_share', (r) => pct(r.current_corpus_share)],
+    ['corpus_share', (r) => pct(r.corpus_share)],
+    ['median_age', (r) => r.freshness.median_age ?? '—'],
+    ['recent_evidence_share', (r) => pct(r.freshness.evidence_share_under_365d)],
+    ['pias', (r) => r.pias],
+    ['current_pias', (r) => r.current_pias],
+    ['historical_pias', (r) => r.historical_pias],
+    ['google_retrieval_score', (r) => r.google_retrieval_score ?? '—'],
+    ['momentum', (r) => (r.momentum.below_floor ? '—' : `${r.momentum.arrow} ${r.momentum.label}`)],
+    ['sentiment', (r) => r.sentiment.label],
   ];
 
   return {
     entity: board.entity,
     associations: rows.map((r) => ({ association_id: r.association_id, label: r.label })),
-    rows: fields.map(([label, fn]) => ({ metric: label, values: rows.map(fn) })),
+    rows: fields.map(([key, fn]) => ({ metric_key: key, values: rows.map(fn) })),
     detail: rows,
   };
 }
@@ -171,7 +173,7 @@ export function gaps(entityId, options = {}) {
   const rows = board.associations;
   const historicallyStrongNowWeak = rows
     .filter((r) => r.historical_pias >= 40 && r.current_pias < r.historical_pias * 0.6)
-    .map((r) => ({ ...summary(r), reason: `historical PIAS ${r.historical_pias} against current ${r.current_pias}; ${pct(r.freshness.evidence_share_under_365d)} of evidence is under a year old` }));
+    .map((r) => ({ ...summary(r), reason: `older strength ${r.historical_pias} against recent strength ${r.current_pias};${pct(r.freshness.evidence_share_under_365d)} of evidence is under a year old` }));
 
   const growing = rows
     .filter((r) => ['up', 'rapid_up'].includes(r.momentum.bucket))
@@ -184,7 +186,7 @@ export function gaps(entityId, options = {}) {
   const underrepresented = rows
     .filter((r) => r.domains >= 2 && r.domains < 15 && r.current_pias < 50 && r.sentiment.label !== 'negative')
     .sort((a, b) => a.domains - b.domains)
-    .map((r) => ({ ...summary(r), reason: `only ${r.domains} independent domains behind it, current PIAS ${r.current_pias}` }));
+    .map((r) => ({ ...summary(r), reason: `only ${r.domains} independent domains behind it, recent strength ${r.current_pias}` }));
 
   const risk = rows
     .filter((r) => r.sentiment.label === 'negative' && ['up', 'rapid_up'].includes(r.momentum.bucket))
@@ -226,6 +228,9 @@ const summary = (r, note = null) => ({
   current_pias: r.current_pias,
   historical_pias: r.historical_pias,
   documents: r.documents,
+  // §93: the counts every score on the gaps screen is shown with.
+  current_documents: r.current_documents,
+  independent_sources: r.independent_sources,
   domains: r.domains,
   current_corpus_share: r.current_corpus_share,
   momentum: r.momentum.arrow,
@@ -302,7 +307,7 @@ export function narrative(entityId, { now = Date.now(), coverage = null } = {}) 
   const anchored = gap?.historically_anchored?.[0] ?? gap?.overweighted_by_google?.[0];
   if (anchored) {
     sentences.push(
-      `Google's current first page still overweights the ${anchored.label} relationship relative to the wider current corpus: it accounts for ${anchored.google_retrieval_score}% of the classified first-page weight against ${anchored.current_association_share_pct}% of the current association mass, and its historical score (${anchored.historical_pias}) exceeds its current one (${anchored.current_pias}).`
+      `Google's current first page still overweights the ${anchored.label} relationship relative to the wider current corpus: ${anchored.google_retrieval_score}% of first-page weight carries it, against ${anchored.current_corpus_share_pct}% of recent documents${anchored.historical_pias > anchored.current_pias ? `, and its historical score (${anchored.historical_pias}) exceeds its current one (${anchored.current_pias})` : ''}.`
     );
   } else if (!gap) {
     sentences.push('No Google SERP snapshot has been captured yet, so no comparison with Google retrieval is possible.');

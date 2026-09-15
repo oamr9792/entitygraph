@@ -1,4 +1,5 @@
 import { h, api, fmt, disclaimer, toast, colourFor } from '../app.js';
+import { metricLabel, term, scoreWithBasis, labelText, METRICS } from '../lib/metrics-ui.js';
 
 /**
  * §52, §53, §77 — the Google overlay.
@@ -17,22 +18,22 @@ export async function serpView({ params }) {
       capture.textContent = 'Capturing…';
       try {
         await api(`/api/entities/${params.id}/serp`, { method: 'POST', body: {} });
-        toast('SERP captured', 'success');
+        toast('Google results captured', 'success');
         location.reload();
       } catch (err) {
         toast(err.message, 'error');
         capture.disabled = false;
-        capture.textContent = 'Capture SERP now';
+        capture.textContent = 'Capture Google results now';
       }
     },
-  }, 'Capture SERP now');
+  }, 'Capture Google results now');
 
   if (!data.overlay) {
     return h('div', {},
       h('div', { class: 'page-head' }, h('div', {}, h('h1', {}, 'Google overlay'))),
       disclaimer(),
       h('div', { class: 'panel' }, h('div', { class: 'empty' },
-        h('p', {}, data.note ?? 'No SERP snapshot yet.'),
+        h('p', {}, data.note ?? 'No Google snapshot yet.'),
         h('p', { class: 'small dim' }, 'This costs one DataForSEO SERP call.'),
         capture
       ))
@@ -40,6 +41,9 @@ export async function serpView({ params }) {
   }
 
   const { overlay, gap } = data;
+  const firstPage = overlay.first_page_results ?? 0;
+  const pages = labelText('documents').toLowerCase();
+  const olderDocuments = (r) => Math.max(0, (r.documents ?? 0) - (r.current_documents ?? 0));
 
   const results = h('table', {},
     h('thead', {}, h('tr', {},
@@ -65,12 +69,13 @@ export async function serpView({ params }) {
     h('thead', {}, h('tr', {},
       h('th', { class: 'no-sort' }, 'Association'),
       h('th', { class: 'num no-sort' }, 'Weight'),
-      h('th', { class: 'num no-sort' }, 'GRS')
+      h('th', { class: 'num no-sort' }, metricLabel('google_retrieval_score'))
     )),
     h('tbody', {}, overlay.scores.map((s) => h('tr', {},
       h('td', {}, h('a', { href: `#/associations/${s.association_id}` }, s.label)),
       h('td', { class: 'num dim' }, s.weight.toFixed(2)),
-      h('td', { class: 'num score-cell' }, fmt.score(s.google_retrieval_score))
+      h('td', { class: 'num' },
+        scoreWithBasis('google_retrieval_score', s.google_retrieval_score, { results: s.results ?? 0, total: firstPage }, { compact: true }))
     )))
   );
 
@@ -78,18 +83,20 @@ export async function serpView({ params }) {
     ? h('table', {},
         h('thead', {}, h('tr', {},
           h('th', { class: 'no-sort' }, 'Association'),
-          h('th', { class: 'num no-sort', title: 'Current Entity Score' }, 'CES'),
-          h('th', { class: 'num no-sort', title: 'Historical Association Score' }, 'HAS'),
-          h('th', { class: 'num no-sort', title: 'Share of the entity’s current association evidence mass' }, 'Current corpus'),
-          h('th', { class: 'num no-sort', title: 'Share of the classified first page' }, 'Google'),
-          h('th', { class: 'num no-sort', title: 'Google minus corpus. Positive: Google surfaces more of this than the current web carries.' }, 'Gap')
+          h('th', { class: 'num no-sort' }, metricLabel('current_pias')),
+          h('th', { class: 'num no-sort' }, metricLabel('historical_pias')),
+          h('th', { class: 'num no-sort' }, metricLabel('current_corpus_share')),
+          h('th', { class: 'num no-sort' }, metricLabel('google_retrieval_score')),
+          h('th', { class: 'num no-sort' }, metricLabel('retrieval_gap'))
         )),
         h('tbody', {}, gap.rows.map((r) => h('tr', {},
           h('td', {}, h('a', { href: `#/associations/${r.association_id}` }, r.label)),
-          h('td', { class: 'num' }, fmt.score(r.current_pias)),
-          h('td', { class: 'num dim' }, fmt.score(r.historical_pias)),
-          h('td', { class: 'num' }, fmt.pctRaw(r.current_association_share_pct, 1)),
-          h('td', { class: 'num' }, fmt.pctRaw(r.google_retrieval_score, 1)),
+          h('td', { class: 'num' }, scoreWithBasis('current_pias', r.current_pias, { documents: r.current_documents }, { compact: true })),
+          h('td', { class: 'num dim' }, scoreWithBasis('historical_pias', r.historical_pias, { documents: olderDocuments(r) }, { compact: true })),
+          h('td', { class: 'num' }, fmt.pctRaw(r.current_corpus_share_pct, 1),
+            h('div', { class: 'small dim' }, `of ${fmt.n(r.current_documents)} recent ${pages} carry it`)),
+          h('td', { class: 'num' },
+            scoreWithBasis('google_retrieval_score', r.google_retrieval_score, { results: r.google_results ?? 0, total: firstPage }, { compact: true })),
           h('td', { class: `num ${r.gap > 0 ? 'sentiment negative' : 'sentiment positive'}` },
             `${r.gap > 0 ? '+' : ''}${r.gap}`)
         )))
@@ -115,19 +122,25 @@ export async function serpView({ params }) {
           h('h2', {}, 'The finding (§77)'),
           h('div', { class: 'panel-body narrative' },
             h('p', {},
-              `Google's first page overweights `, h('strong', {}, finding.label),
-              ` relative to the current corpus: it accounts for ${finding.google_retrieval_score}% of the classified first-page weight against ${finding.current_association_share_pct}% of the entity's current association mass`,
+              'Google’s first page shows ', h('strong', {}, finding.label),
+              ' more than the recent web carries it: ', term('google_retrieval_score'),
+              ` ${fmt.score(finding.google_retrieval_score)}, from ${fmt.n(finding.google_results ?? 0)} of ${fmt.n(firstPage)} first-page results, against ${finding.current_corpus_share_pct}% of ${fmt.n(finding.current_documents)} recent ${pages} (`,
+              term('current_corpus_share'), ')',
               finding.historical_pias > finding.current_pias
-                ? `, and this association is weaker now (${finding.current_pias}) than it was historically (${finding.historical_pias}).`
+                ? h('span', {}, ', and it is weaker now (', term('current_pias'), ` ${fmt.score(finding.current_pias)}) than it was (`,
+                    term('historical_pias'), ` ${fmt.score(finding.historical_pias)}).`)
                 : '.'),
             h('p', { class: 'small dim', style: { marginBottom: 0 } },
-              'A positive gap means Google’s results may still reflect a historical entity state the current web has moved on from. That is the situation this product exists to detect — it is not a prediction that anything will change.')
+              'A positive gap means Google’s results may still reflect an older picture the current web has moved on from. That is the situation this product exists to detect — it is not a prediction that anything will change.')
           )
         )
       : null,
     h('div', { class: 'split-2' },
-      h('div', { class: 'panel' }, h('h2', {}, 'Google Retrieval Score (§53)'), h('div', { class: 'panel-body tight' }, scores)),
-      h('div', { class: 'panel' }, h('h2', {}, 'Corpus vs Google (§14, §77)'), h('div', { class: 'panel-body tight' }, gapRows ?? h('div', { class: 'empty' }, 'No comparison available.')))
+      h('div', { class: 'panel' },
+        h('h2', {}, metricLabel('google_retrieval_score')),
+        h('div', { class: 'panel-body tight' }, scores,
+          h('p', { class: 'small dim', style: { padding: '0 0.7rem 0.7rem', margin: 0 } }, METRICS.google_retrieval_score.caveat ?? ''))),
+      h('div', { class: 'panel' }, h('h2', {}, 'Recent web vs Google (§14, §77)'), h('div', { class: 'panel-body tight' }, gapRows ?? h('div', { class: 'empty' }, 'No comparison available.')))
     ),
     h('div', { class: 'panel' },
       h('h2', {}, 'Ranking URLs and the associations they support (§52)'),

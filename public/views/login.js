@@ -1,4 +1,5 @@
 import { h, api, toast, state } from '../app.js';
+import { DISCLAIMERS } from '../lib/metrics-ui.js';
 
 /**
  * The login screen, and the forced password change that follows a first sign-in.
@@ -50,8 +51,7 @@ export function loginView({ onSignedIn }) {
       h('p', { class: 'small muted' }, 'Sign in to continue.'),
       form
     ),
-    h('p', { class: 'auth-footnote' },
-      'PIAS is an external estimate of entity-association strength. It does not expose Google’s internal Knowledge Graph or ranking scores.')
+    h('p', { class: 'auth-footnote' }, DISCLAIMERS.external_estimate)
   );
 }
 

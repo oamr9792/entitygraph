@@ -1,4 +1,6 @@
 import { h, api, fmt, sortableTable, disclaimer, toast, navigate, clear } from '../app.js';
+import { DISCLAIMERS } from '../lib/metrics-ui.js';
+import { weakStatesBanner } from '../lib/weak-states.js';
 
 /**
  * §48 — the evidence explorer.
@@ -52,23 +54,14 @@ function relatedPanel(associationId) {
                   : null
               ),
             },
-            { key: 'shared', label: 'Shared docs', num: true },
+            { key: 'shared', metric: 'shared_documents', num: true },
+            { key: 'share_of_this', metric: 'share_of_this', num: true, render: (r) => fmt.pct(r.share_of_this) },
+            { key: 'share_of_other', metric: 'share_of_other', num: true, render: (r) => fmt.pct(r.share_of_other) },
             {
-              key: 'share_of_this', label: '% of these', num: true,
-              title: 'Share of THIS association’s documents that also carry the other one',
-              render: (r) => fmt.pct(r.share_of_this),
-            },
-            {
-              key: 'share_of_other', label: '% of those', num: true,
-              title: 'Share of the OTHER association’s documents that also carry this one',
-              render: (r) => fmt.pct(r.share_of_other),
-            },
-            {
-              key: 'lift', label: 'Lift', num: true,
-              title: 'How much more often they co-occur than chance. 1.0 is chance; below 1 is avoidance.',
+              key: 'lift', metric: 'lift', num: true,
               render: (r) => h('span', { class: r.lift >= 3 ? 'score-cell' : 'dim' }, r.lift.toFixed(1)),
             },
-            { key: 'documents', label: 'Its docs', num: true, render: (r) => fmt.n(r.documents) },
+            { key: 'documents', metric: 'documents', num: true, render: (r) => fmt.n(r.documents) },
           ],
           data.related,
           { initialSort: 'shared' }
@@ -119,19 +112,24 @@ export async function evidenceView({ params }) {
         r.source_classification ? h('div', { class: 'small dim' }, r.source_classification) : null) },
     { key: 'evidence_text', label: 'Evidence', sortable: false, render: (r) => h('div', { class: 'evidence-text' }, r.evidence_text) },
     { key: 'relationship', label: 'Relation', render: (r) => h('span', { class: 'small mono' }, r.relationship) },
-    { key: 'source_reliability', label: 'Source rel.', num: true, title: 'External Source Reliability Proxy (§26) — not Domain Authority', render: (r) => fmt.score(r.source_reliability * 100) },
-    { key: 'relationship_confidence', label: 'Rel. conf.', num: true, render: (r) => r.relationship_confidence?.toFixed(2) },
-    { key: 'proximity', label: 'Proximity', num: true, title: 'Token distance blended with grammatical boundary (§25)',
+    { key: 'entity_confidence', metric: 'entity_confidence', num: true, render: (r) => r.entity_confidence?.toFixed(2) },
+    { key: 'source_reliability', metric: 'source_reliability', num: true, render: (r) => fmt.score(r.source_reliability * 100) },
+    { key: 'relationship_confidence', metric: 'relationship_confidence', num: true, render: (r) => r.relationship_confidence?.toFixed(2) },
+    { key: 'proximity', metric: 'proximity', num: true,
       render: (r) => h('span', { title: `${r.token_distance ?? '?'} tokens, ${r.boundary ?? '?'}` }, r.proximity?.toFixed(2)) },
-    { key: 'independence_weight', label: 'Independence', num: true, title: '§22 — duplicates and same-domain repeats are discounted here',
+    { key: 'independence_weight', metric: 'independence_weight', num: true,
       render: (r) => h('span', { class: r.independence_weight < 1 ? 'dup' : '' }, r.independence_weight?.toFixed(2)) },
-    { key: 'recency_weight', label: 'Recency', num: true, render: (r) => r.recency_weight?.toFixed(2) },
-    { key: 'duplicate_cluster_id', label: 'Duplicate', render: (r) => r.duplicate_cluster_id
+    { key: 'recency_weight', metric: 'recency_weight', num: true, render: (r) => r.recency_weight?.toFixed(2) },
+    { key: 'duplicate_cluster_id', metric: 'duplicate_cluster', render: (r) => r.duplicate_cluster_id
         ? h('span', { class: 'chip warn', title: `${r.duplicate_kind} cluster of ${r.cluster_size}` },
             `${r.is_cluster_primary ? 'original' : r.duplicate_kind} (${r.cluster_size})`)
         : h('span', { class: 'dim' }, '—') },
-    { key: 'sentiment', label: 'Sentiment', render: (r) => h('span', { class: `sentiment ${r.sentiment}` }, r.sentiment) },
-    { key: 'weighted_evidence_score', label: 'Weighted', num: true, title: '§31 — the product of all six factors',
+    { key: 'sentiment', metric: 'sentiment', render: (r) => h('span', { class: `sentiment ${r.sentiment}` }, r.sentiment) },
+    // §97: which extractor produced a row is stamped on the row, in both modes.
+    { key: 'extractor', metric: 'extractor', render: (r) => h('span', {
+        class: `extractor-stamp ${r.extractor === 'heuristic' ? 'heuristic' : ''}`.trim(),
+      }, r.extractor ?? 'unknown') },
+    { key: 'weighted_evidence_score', metric: 'evidence_score', num: true,
       render: (r) => h('span', { class: 'score-cell' }, r.weighted_evidence_score?.toFixed(3)) },
     { key: 'actions', label: '', sortable: false, render: (r) => h('div', { class: 'toolbar', style: { margin: 0, gap: '0.25rem' } },
         r.excluded
@@ -148,6 +146,7 @@ export async function evidenceView({ params }) {
   const excluded = evidence.filter((e) => e.excluded);
 
   return h('div', {},
+    weakStatesBanner(association.entity_id),
     h('div', { class: 'page-head' },
       h('div', {},
         h('h1', {}, association.canonical_label),
@@ -179,7 +178,8 @@ export async function evidenceView({ params }) {
       h('div', { class: 'panel-body tight' },
         evidence.length
           ? sortableTable(columns, evidence, { initialSort: 'weighted_evidence_score' })
-          : h('div', { class: 'empty' }, 'No evidence rows.')
+          : h('div', { class: 'empty' }, 'No evidence rows.'),
+        h('p', { class: 'small dim', style: { padding: '0 0.7rem 0.7rem', margin: 0 } }, DISCLAIMERS.source_reliability)
       )
     )
   );

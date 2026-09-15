@@ -1,9 +1,21 @@
 import { MODEL } from '../config.js';
 import { all, get, run, tx } from '../db.js';
 import {
-  proximityScore, recencyWeight, sourceReliability, classifyDomain, mentionWeightAt,
-  evidenceScore, associationComponents, composePias, momentum, conditionalScores,
-  aggregateSentiment, googleRetrievalScores, MOMENTUM_ARROWS,
+  proximityScore,
+  recencyWeight,
+  sourceReliability,
+  classifyDomain,
+  mentionWeightAt,
+  evidenceScore,
+  associationComponents,
+  composePias,
+  momentum,
+  conditionalScores,
+  aggregateSentiment,
+  googleRetrievalScores,
+  MOMENTUM_ARROWS,
+  bandFor,
+  MOMENTUM_LABELS,
 } from './scoring.js';
 import { assignIndependence } from './duplicates.js';
 import { round, median, ageDays, safeDiv, parseDate, monthKey, humanAge, DAY_MS } from '../util/stats.js';
@@ -475,6 +487,12 @@ export function leaderboard(entityId, { windowDays = null, halfLifeDays = null, 
       current_pias: currentPias[association.id].pias,
       historical_pias: historicalPias[association.id].pias,
       google_retrieval_score: grs.scores[association.id]?.grs ?? null,
+      // §93 — the count the Google score rests on.
+      google_results: grs.scores[association.id]?.results ?? null,
+      // §95 — display bands, one per window.
+      band: bandFor(lifetimePias[association.id].pias, overrides),
+      current_band: bandFor(currentPias[association.id].pias, overrides),
+      historical_band: bandFor(historicalPias[association.id].pias, overrides),
 
       documents: lifetime.documents,
       domains: lifetime.domains,
@@ -518,7 +536,12 @@ export function leaderboard(entityId, { windowDays = null, halfLifeDays = null, 
     entity_documents: totalDocs,
     current_entity_documents: currentDocs,
     historical_entity_documents: historicalDocs,
-    serp: { classified_weight: grs.classified_weight, unclassified_share: grs.unclassified_share, snapshot_at: grs.snapshot_at },
+    serp: {
+      classified_weight: grs.classified_weight,
+      unclassified_share: grs.unclassified_share,
+      snapshot_at: grs.snapshot_at,
+      first_page_results: grs.first_page_results ?? 0,
+    },
     associations: rows,
   };
 }
@@ -557,12 +580,46 @@ export function momentumFor(entityId, associationId, { now = Date.now(), periodD
     )?.w ?? 0;
 
   const nowIso = new Date(now).toISOString();
-  return momentum({
+  const result = momentum({
     current: weightIn(startCurrent, nowIso),
     previous: weightIn(startPrevious, startCurrent),
     currentEntityTotal: entityWeightIn(startCurrent, nowIso),
     previousEntityTotal: entityWeightIn(startPrevious, startCurrent),
   });
+
+  // §94 — the volume floor. A move from one document to three is "+200%" and
+  // means nothing. Below the floor the direction is withheld rather than shown,
+  // and the counts are returned so the screen can say why.
+  const documentsIn = (from, to) =>
+    get(
+      `SELECT COUNT(DISTINCT s.document_id) AS n
+         FROM association_document_scores s
+         JOIN documents d ON d.id = s.document_id
+        WHERE s.association_id = ? AND COALESCE(d.published_at, d.group_date) >= ?
+          AND COALESCE(d.published_at, d.group_date) < ?`,
+      associationId,
+      from,
+      to
+    )?.n ?? 0;
+  const currentDocuments = documentsIn(startCurrent, nowIso);
+  const previousDocuments = documentsIn(startPrevious, startCurrent);
+  const floor = MODEL.momentum.minDocuments ?? 0;
+  const counts = { current_documents: currentDocuments, previous_documents: previousDocuments, min_documents: floor };
+
+  if (currentDocuments + previousDocuments < floor) {
+    return {
+      ...result,
+      ...counts,
+      raw_change: null,
+      relative_change: null,
+      basis: null,
+      bucket: 'insufficient',
+      arrow: MOMENTUM_ARROWS.insufficient,
+      label: MOMENTUM_LABELS.insufficient,
+      below_floor: true,
+    };
+  }
+  return { ...result, ...counts, below_floor: false };
 }
 
 // --- §47 Timeline -----------------------------------------------------------
@@ -659,7 +716,7 @@ export function googleRetrievalFor(entityId) {
       ORDER BY captured_at DESC LIMIT 1`,
     entityId
   );
-  if (!snapshot) return { scores: {}, classified_weight: 0, unclassified_share: null, snapshot_at: null };
+  if (!snapshot) return { scores: {}, first_page_results: 0, classified_weight: 0, unclassified_share: null, snapshot_at: null };
 
   const results = all(
     `SELECT r.id, r.rank FROM serp_results r WHERE r.snapshot_id = ? ORDER BY r.rank`,

@@ -158,7 +158,29 @@ const MIME = {
 
 const PUBLIC_DIR = path.join(ROOT, 'public');
 
+/**
+ * Server modules the browser also imports, served byte-for-byte from their one
+ * copy under src/. §89 requires the copy registry to be shared by server and
+ * client; a second copy under public/ would be exactly the drift it forbids.
+ * An explicit map, never a directory, so nothing else under src/ is reachable.
+ */
+const SHARED_MODULES = {
+  '/copy/metrics.js': path.join(ROOT, 'src', 'copy', 'metrics.js'),
+};
+
 export function serveStatic(req, res, pathname) {
+  const shared = SHARED_MODULES[pathname];
+  if (shared) {
+    const body = fs.readFileSync(shared);
+    res.writeHead(200, {
+      'Content-Type': MIME['.js'],
+      'Content-Length': body.length,
+      'Cache-Control': 'no-cache',
+    });
+    res.end(body);
+    return true;
+  }
+
   const rel = pathname === '/' ? '/index.html' : pathname;
   const resolved = path.resolve(path.join(PUBLIC_DIR, rel));
   // Containment check: refuse anything that escapes public/ after resolution.

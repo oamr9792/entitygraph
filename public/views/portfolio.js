@@ -1,4 +1,5 @@
 import { h, api, fmt, toast, navigate, sortableTable, disclaimer, onTeardown } from '../app.js';
+import { isPlain } from '../lib/metrics-ui.js';
 
 /**
  * One chip that says what actually happened to the last build.
@@ -27,14 +28,20 @@ function buildChip(row) {
 /** The entity list. */
 export async function portfolioView() {
   const { entities } = await api('/api/entities');
+  // §88: plain mode starts people at the summary and the guided path; the
+  // dashboard and the full form are one click further, not gone.
+  const plain = isPlain();
+  const newHref = plain ? '#/quickstart' : '#/new';
 
   if (!entities.length) {
     return h('div', {},
-      h('div', { class: 'page-head' }, h('div', {}, h('h1', {}, 'Entities'))),
+      h('div', { class: 'page-head' }, h('div', {}, h('h1', {}, plain ? 'Clients' : 'Entities'))),
       h('div', { class: 'panel' },
         h('div', { class: 'empty' },
-          h('p', {}, 'No entities yet.'),
-          h('button', { class: 'primary', onclick: () => navigate('#/new') }, 'Add the first entity')
+          h('p', {}, plain ? 'No clients yet.' : 'No entities yet.'),
+          h('div', { class: 'toolbar', style: { justifyContent: 'center' } },
+            h('button', { class: 'primary', onclick: () => navigate('#/quickstart') }, 'Start the quickstart'),
+            h('button', { onclick: () => navigate('#/new') }, 'Full form'))
         )
       )
     );
@@ -42,7 +49,7 @@ export async function portfolioView() {
 
   const table = sortableTable(
     [
-      { key: 'canonical_name', label: 'Entity', render: (r) => h('a', { href: `#/entities/${r.id}` }, r.canonical_name) },
+      { key: 'canonical_name', label: plain ? 'Client' : 'Entity', render: (r) => h('a', { href: `#/entities/${r.id}${plain && r.associations ? '/summary' : ''}` }, r.canonical_name) },
       { key: 'entity_type', label: 'Type', render: (r) => h('span', { class: 'chip' }, r.entity_type) },
       {
         key: 'status',
@@ -53,7 +60,7 @@ export async function portfolioView() {
         render: (r) => buildChip(r),
         sortValue: (r) => r.last_job_status ?? r.status,
       },
-      { key: 'documents', label: 'Documents', num: true, render: (r) => fmt.n(r.documents) },
+      { key: 'documents', metric: 'documents', num: true, render: (r) => fmt.n(r.documents) },
       { key: 'associations', label: 'Associations', num: true, render: (r) => fmt.n(r.associations) },
       { key: 'spend', label: 'Spend', num: true, sortValue: (r) => r.spend?.costUsd ?? 0, render: (r) => `$${(r.spend?.costUsd ?? 0).toFixed(3)}` },
       { key: 'updated_at', label: 'Updated', render: (r) => fmt.date(r.updated_at) },
@@ -88,8 +95,8 @@ export async function portfolioView() {
 
   return h('div', {},
     h('div', { class: 'page-head' },
-      h('div', {}, h('h1', {}, 'Entities'), h('div', { class: 'sub' }, `${entities.length} tracked`)),
-      h('button', { class: 'primary', onclick: () => navigate('#/new') }, 'New entity')
+      h('div', {}, h('h1', {}, plain ? 'Clients' : 'Entities'), h('div', { class: 'sub' }, `${entities.length} tracked`)),
+      h('button', { class: 'primary', onclick: () => navigate(newHref) }, plain ? 'New client' : 'New entity')
     ),
     disclaimer(),
     h('div', { class: 'panel' }, h('div', { class: 'panel-body tight' }, table))

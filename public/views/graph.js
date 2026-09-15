@@ -1,5 +1,6 @@
 import { h, api, fmt, colourFor, disclaimer, navigate } from '../app.js';
 import { timeControl } from './entity.js';
+import { labelText } from '../lib/metrics-ui.js';
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
 const svgEl = (tag, attrs = {}, ...children) => {
@@ -106,15 +107,19 @@ export async function graphView({ params, query }) {
   const container = h('div', { class: 'graph-wrap' });
   const caption = h('div', { class: 'small muted', style: { padding: '0.5rem 0.2rem 0' } });
 
+  // §93: a node's score is never shown without the pages behind it.
+  const documentsById = new Map(graph.edges.map((e) => [e.target, e.documents]));
+  const strength = labelText('pias');
+
   const showCurrent = () => {
     container.replaceChildren(drawGraph(graph.center.label, graph.nodes.map((n) => ({
       association_id: n.association_id,
       label: n.label,
       size: n.size,
       sentiment: n.sentiment,
-      detail: `PIAS ${fmt.score(n.size)}, current ${fmt.score(n.current)}`,
+      detail: `${strength} ${fmt.score(n.size)} from ${fmt.n(documentsById.get(n.id))} ${labelText('documents').toLowerCase()}; ${labelText('current_pias').toLowerCase()} ${fmt.score(n.current)}`,
     }))));
-    caption.textContent = 'Node size and edge thickness: PIAS over the selected window. Edge colour: sentiment. Click a node for its evidence.';
+    caption.textContent = `Node size and edge thickness: ${strength.toLowerCase()} over the selected window. Edge colour: sentiment. Click a node for its evidence.`;
   };
 
   const showYear = (year) => {
@@ -143,7 +148,7 @@ export async function graphView({ params, query }) {
       sentiment: sentimentByLabel.get(r.label) ?? 'unknown',
       detail: `${year}: evidence weight ${r.evidence.toFixed(2)}`,
     }))));
-    caption.textContent = `Entity state as observed in ${year}: node size is that year's share of association evidence weight, not the current PIAS.`;
+    caption.textContent = `Entity state as observed in ${year}: node size is that year's share of association evidence weight, not the current ${strength.toLowerCase()}.`;
   };
 
   const slider = h('input', {

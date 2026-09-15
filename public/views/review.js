@@ -1,4 +1,5 @@
 import { h, api, fmt, disclaimer, toast, navigate, sortableTable, state, clear } from '../app.js';
+import { metricLabel } from '../lib/metrics-ui.js';
 
 /** §74 — the manual review queue for the 0.40–0.69 confidence band. */
 export async function reviewView({ params }) {
@@ -21,7 +22,7 @@ export async function reviewView({ params }) {
   const rows = data.queue.map((r) => h('div', { class: 'panel' },
     h('div', { class: 'panel-body' },
       h('div', { class: 'toolbar' },
-        h('span', { class: 'chip warn' }, `confidence ${r.entity_confidence}`),
+        h('span', { class: 'chip warn' }, metricLabel('entity_confidence'), ` ${r.entity_confidence}`),
         h('a', { href: r.url, target: '_blank', rel: 'noopener noreferrer' }, r.root_domain),
         h('span', { class: 'small dim' }, fmt.date(r.published_at ?? r.group_date)),
         h('span', { class: 'spacer' }),

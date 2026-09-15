@@ -364,6 +364,8 @@ export const MOMENTUM_ARROWS = {
   stable: '→',
   down: '↓',
   rapid_down: '↓↓',
+  // §94 — below the volume floor there is no direction to show.
+  insufficient: '—',
 };
 
 export const MOMENTUM_LABELS = {
@@ -372,6 +374,7 @@ export const MOMENTUM_LABELS = {
   stable: 'stable',
   down: 'weakening',
   rapid_down: 'rapidly weakening',
+  insufficient: 'too few documents to measure',
 };
 
 // --- §38 Conditional and Jaccard -------------------------------------------
@@ -424,6 +427,10 @@ export function rankWeight(rank, overrides) {
  */
 export function googleRetrievalScores(results, overrides) {
   const weights = new Map();
+  // §93 — the count each score rests on: how many first-page results carry it,
+  // out of how many were weighed.
+  const resultCounts = new Map();
+  let firstPageResults = 0;
   let classifiedWeight = 0;
   let totalWeight = 0;
 
@@ -431,11 +438,15 @@ export function googleRetrievalScores(results, overrides) {
     const w = rankWeight(r.rank, overrides);
     if (w <= 0) continue;
     totalWeight += w;
+    firstPageResults += 1;
     // A result linked to the same association twice still carries it once.
     const ids = [...new Set(r.associationIds ?? [])];
     if (!ids.length) continue;
     classifiedWeight += w;
-    for (const id of ids) weights.set(id, (weights.get(id) ?? 0) + w);
+    for (const id of ids) {
+      weights.set(id, (weights.get(id) ?? 0) + w);
+      resultCounts.set(id, (resultCounts.get(id) ?? 0) + 1);
+    }
   }
 
   const scores = {};
@@ -443,14 +454,30 @@ export function googleRetrievalScores(results, overrides) {
     scores[id] = {
       weight: round(weight, 4),
       grs: round(safeDiv(weight, totalWeight, 0) * 100, 1),
+      results: resultCounts.get(id) ?? 0,
     };
   }
   return {
     scores,
+    first_page_results: firstPageResults,
     classified_weight: round(classifiedWeight, 4),
     total_weight: round(totalWeight, 4),
     unclassified_share: round(safeDiv(totalWeight - classifiedWeight, totalWeight, 0), 4),
   };
+}
+
+/**
+ * §95 — the plain band for an association-strength score. A display grouping
+ * within one entity, thresholds in MODEL.bands; it feeds no other calculation.
+ */
+export function bandFor(score, overrides) {
+  if (score === null || score === undefined || !Number.isFinite(Number(score))) return null;
+  const bands = { ...MODEL.bands, ...(overrides?.bands || {}) };
+  const value = Number(score);
+  if (value >= bands.dominant) return 'dominant';
+  if (value >= bands.strong) return 'strong';
+  if (value >= bands.present) return 'present';
+  return 'marginal';
 }
 
 // --- §43 Sentiment ----------------------------------------------------------
