@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { METRICS, BANDS, BAND_ORDER, DISCLAIMERS, NOTICES } from '../src/copy/metrics.js';
+import { METRICS, BANDS, BAND_ORDER, DISCLAIMERS, NOTICES, AUDIT_CHECKS, AUDIT_CHECK_ORDER } from '../src/copy/metrics.js';
 import { MODEL, SCORE_DISCLAIMER } from '../src/config.js';
 import { bandFor } from '../src/services/scoring.js';
 
@@ -141,4 +141,17 @@ test('§94 the momentum floor is tunable in MODEL and every notice renders', () 
   assert.match(NOTICES.dates_inferred({ inferred: 12, total: 40 }), /12 of 40/);
   assert.match(NOTICES.heuristic_rows({ heuristic: 3, total: 9 }), /3 of 9/);
   for (const key of ['momentum_floor', 'no_llm_key', 'no_google']) assert.ok(NOTICES[key]().length > 10);
+});
+
+test('§101 every audit check has a plain name, one sentence on what it measures, and one line on what to do', () => {
+  assert.deepEqual(AUDIT_CHECK_ORDER, Array.from({ length: 15 }, (_, i) => `C${i + 1}`));
+  for (const id of AUDIT_CHECK_ORDER) {
+    const check = AUDIT_CHECKS[id];
+    assert.ok(check.name && check.what && check.act, `${id} is complete`);
+    assert.ok(oneSentence(check.what), `${id}.what must be exactly one sentence`);
+    assert.doesNotMatch(`${check.name} ${check.what} ${check.act}`, /\b(PIAS|CES|HAS|GRS|ACS)\b/, `${id} uses plain words`);
+  }
+  for (const id of [...MODEL.audit.blockingChecks, ...MODEL.audit.unsignable, ...MODEL.audit.approvalOnly]) {
+    assert.ok(AUDIT_CHECKS[id], `MODEL.audit names ${id}, which the registry defines`);
+  }
 });

@@ -26,7 +26,7 @@ export function enqueue(entityId, kind = 'full_build', options = {}) {
     `INSERT INTO crawl_jobs (entity_id, kind, status, steps_total, options) VALUES (?, ?, 'queued', ?, ?)`,
     entityId,
     kind,
-    STEPS.length,
+    kind === 'full_build' ? STEPS.length : Math.max(1, Number(options.steps_total) || 1),
     JSON.stringify(options)
   );
   const jobId = Number(res.lastInsertRowid);
@@ -40,11 +40,13 @@ export const getJob = (jobId) => {
   return { ...job, options: safeParse(job.options, {}), progress: safeParse(job.progress, []) };
 };
 
-export const listJobs = (entityId = null, limit = 25) =>
+export const listJobs = (entityId = null, limit = 25, kind = null) =>
   all(
-    `SELECT * FROM crawl_jobs WHERE (? IS NULL OR entity_id = ?) ORDER BY id DESC LIMIT ?`,
+    `SELECT * FROM crawl_jobs WHERE (? IS NULL OR entity_id = ?) AND (? IS NULL OR kind = ?) ORDER BY id DESC LIMIT ?`,
     entityId,
     entityId,
+    kind,
+    kind,
     limit
   ).map((j) => ({ ...j, options: safeParse(j.options, {}), progress: safeParse(j.progress, []) }));
 
@@ -108,14 +110,23 @@ async function execute(job) {
   };
 
   try {
-    await runPipeline({
-      entityId: job.entity_id,
-      jobId: job.id,
-      options: safeParse(job.options, {}),
-      report,
-      heartbeat,
-      shouldStop: () => cancelled.has(job.id),
-    });
+    const options = safeParse(job.options, {});
+    if (job.kind === 'content_audit' || job.kind === 'asset_audit_batch') {
+      // §98: audits are on-demand jobs on the same serial queue as builds, so
+      // an audit never reads a corpus that a build is halfway through rewriting.
+      const audit = await import('../services/audit.js');
+      if (job.kind === 'content_audit') await audit.runAudit(options.draft_id, { jobId: job.id, report });
+      else await audit.runAssetBatch(job.entity_id, { jobId: job.id, report });
+    } else {
+      await runPipeline({
+        entityId: job.entity_id,
+        jobId: job.id,
+        options,
+        report,
+        heartbeat,
+        shouldStop: () => cancelled.has(job.id),
+      });
+    }
     const spend = spendForEntity(job.entity_id);
     const wasCancelled = cancelled.delete(job.id);
     run(

@@ -75,7 +75,12 @@ export function sourceSummary(row) {
   };
 }
 
-export async function readSource(entityId, rawUrl, user = null) {
+/**
+ * Reads one public page: directly when allowed, through DataForSEO when that
+ * reads more. Returns the raw HTML too, for checks that inspect links and
+ * markup (§99 C13, C15). Stores nothing.
+ */
+export async function fetchPublicPage(rawUrl, { entityId = null } = {}) {
   const url = await assertPublicUrl(rawUrl);
   let text = '';
   let title = null;
@@ -120,7 +125,14 @@ export async function readSource(entityId, rawUrl, user = null) {
     }
   }
 
-  text = text.slice(0, MAX_STORED_CHARS);
+  return { url: url.href, finalUrl, html, text: text.slice(0, MAX_STORED_CHARS), title, via, reason };
+}
+
+export async function readSource(entityId, rawUrl, user = null) {
+  const page = await fetchPublicPage(rawUrl, { entityId });
+  const url = new URL(page.url);
+  let { text, title } = page;
+  const { html, via, finalUrl, reason } = page;
   if (text.length < 200) {
     throw badRequest(`Could not read enough of that page${reason ? `: ${reason}` : ''}. Try a different URL, or paste the text into the notes and use another format.`);
   }

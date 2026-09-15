@@ -213,6 +213,65 @@ export const MODEL = {
   // §34 — corroboration is log-scaled so 500 weak domains cannot swamp 40
   // strong ones purely by count.
   corroborationLog: true,
+
+  // §98–§103 — the content audit. Every threshold a check applies lives here,
+  // and there is deliberately no composite score to weight them into.
+  audit: {
+    // §98: below this coverage level the audit refuses to run, because every
+    // differentiation check would compare against a corpus too thin to mean anything.
+    minCoverageLevel: 'MEDIUM',
+    blockingChecks: ['C1', 'C2', 'C3'],
+    // §101: C1 and C2 can never be signed off; C3 is cleared only by recording who approved it.
+    unsignable: ['C1', 'C2'],
+    approvalOnly: ['C3'],
+    extraction: { maxWindows: 24 },
+    exclusion: { embeddingSimilarity: 0.82, minTermChars: 4 },
+    support: { minSources: 1 },
+    sources: { minIndependent: 3 },
+    novelty: { minNovelFacts: 1, minClustersPerFact: 2 },
+    verifiability: {
+      minShare: 0.25,
+      minFacts: 3,
+      // Matched against a source's root domain. Highest class wins, in this order.
+      classes: {
+        statutory_register: ['(^|\\.)gov$', '\\.gov\\.[a-z]{2}$', '(^|\\.)sec\\.gov$', '(^|\\.)finra\\.org$', '(^|\\.)fca\\.org\\.uk$', '(^|\\.)sra\\.org\\.uk$', 'companieshouse'],
+        professional_body: ['americanbar\\.org$', 'cfainstitute\\.org$', 'cfp\\.net$', 'lawsociety\\.org\\.uk$', 'aicpa\\.org$', 'nasaa\\.org$', '(^|\\.)[a-z]*bar\\.org$'],
+        academic_institutional: ['\\.edu$', '\\.edu\\.[a-z]{2}$', '\\.ac\\.[a-z]{2}$', '(^|\\.)oyez\\.org$', '(^|\\.)si\\.edu$'],
+        self_asserted: ['linkedin\\.com$', 'facebook\\.com$', 'instagram\\.com$', '(^|\\.)x\\.com$', 'twitter\\.com$', 'crunchbase\\.com$', 'about\\.me$'],
+      },
+    },
+    adverseOverlap: { minAdverseDocuments: 5, attributeShare: 0.3, warnShare: 0.5 },
+    projection: { negligibleDelta: 0.5 },
+    duplicates: { verbatimWords: 12, minhashSimilarity: 0.5 },
+    subject: { minSentences: 6, warnShare: 0.6, failShare: 0.4 },
+    repetition: { warnWasted: 1 },
+    attribution: {
+      warnLoad: 0.2,
+      failLoad: 0.35,
+      warnQuoteShare: 0.15,
+      failQuoteShare: 0.25,
+      maxQuoteWords: 50,
+      patterns: [
+        '\\baccording to\\b',
+        '\\bper the\\b',
+        '\\bas reported (?:by|in)\\b',
+        '\\bthe (?:profile|article|report|piece|story|interview|release|post|feature) (?:states|says|notes|reports|describes|explains|adds|recounts|highlights|mentions)\\b',
+        '\\b(?:told|wrote|writes|writing) (?:to|in)\\b',
+        '\\bin (?:a|an|the) (?:profile|interview|article|piece|report) (?:published|posted|released) by\\b',
+      ],
+      sourceSubjects: [
+        '^(?:the|this|that) (?:article|profile|report|piece|release|interview|outlet|publication|story|post|feature|site)\\b',
+        '^(?:it|they) (?:says|said|states|stated|notes|noted|reports|reported|describes|described)\\b',
+      ],
+    },
+    links: { lateShare: 0.66 },
+    hostFit: { minProfileChars: 200 },
+    regulated: {
+      registrationPattern: '\\b(?:CRD|FINRA|IARD|FRN|FCA|SEC|SRA|NMLS|bar\\s*(?:no|number|#)|licen[cs]e|registration)\\b',
+      occupationPattern: '\\b(?:financial (?:advis[eo]r|planner)|wealth (?:manager|advis[eo]r)|broker|investment advis[eo]r|attorney|lawyer|solicitor|barrister|accountant|CPA|physician|surgeon|pharmacist|insurance agent|mortgage)\\b',
+    },
+    batch: { intervalDays: 7 },
+  },
 };
 
 export const config = {

@@ -206,7 +206,7 @@ export function buildStatus(entityId, { pollMs = 2000 } = {}) {
   const poll = async () => {
     if (stopped) return;
     try {
-      const { jobs } = await api(`/api/jobs?entity_id=${entityId}&limit=1`);
+      const { jobs } = await api(`/api/jobs?entity_id=${entityId}&limit=1&kind=full_build`);
       const job = jobs?.[0] ?? null;
       paint(job);
       const live = job && (job.status === 'running' || job.status === 'queued');
@@ -350,6 +350,7 @@ function shell(content, path) {
       link(`/entities/${entityId}/summary`, 'Summary'),
       link(`/entities/${entityId}`, 'Dashboard'),
       link(`/entities/${entityId}/content`, 'Content'),
+      link(`/entities/${entityId}/audits`, 'Audit'),
     ];
     const upkeep = [
       link(`/entities/${entityId}/review`, plain ? 'Same person?' : 'Review queue'),
@@ -444,6 +445,8 @@ route('/associations/:id/plan', () => import('./views/plan.js').then((m) => m.pl
 route('/associations/:id/content', () => import('./views/content.js').then((m) => m.contentBuilderView));
 route('/content/:id', () => import('./views/content.js').then((m) => m.draftView));
 route('/entities/:id/content', () => import('./views/content.js').then((m) => m.contentListView));
+route('/entities/:id/audits', () => import('./views/audit.js').then((m) => m.auditListView));
+route('/audits/:id', () => import('./views/audit.js').then((m) => m.auditView));
 
 window.addEventListener('hashchange', render);
 

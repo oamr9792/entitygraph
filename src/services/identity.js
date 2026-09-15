@@ -12,7 +12,10 @@ import { rootDomain } from '../util/hash.js';
  * built deliberately and shown to the user rather than inferred quietly.
  */
 
-const MARKER_KINDS = ['organization', 'location', 'occupation', 'education', 'person', 'url', 'other'];
+// `registration` is a regulator or professional registration (FINRA CRD, FCA
+// FRN, bar number). It identifies the person and flags their content for
+// compliance sign-off (§99 C3).
+const MARKER_KINDS = ['organization', 'location', 'occupation', 'education', 'person', 'url', 'registration', 'other'];
 
 /**
  * Default marker weights. An organisation is a much stronger identity signal
@@ -28,6 +31,7 @@ const DEFAULT_WEIGHTS = {
   education: 0.7,
   occupation: 0.5,
   location: 0.45,
+  registration: 1.0,
   other: 0.4,
 };
 

@@ -117,7 +117,7 @@ function whoStep() {
       if (clean(registration)) {
         await api(`/api/entities/${created.entity_id}/markers`, {
           method: 'POST',
-          body: { kind: 'other', value: clean(registration) },
+          body: { kind: 'registration', value: clean(registration) },
         });
       }
       navigate(`#/quickstart/${created.entity_id}?step=markers`);
@@ -170,7 +170,7 @@ async function markersStep(id) {
   };
 
   const kind = h('select', { style: { width: '10rem' } },
-    ['organization', 'location', 'occupation', 'education', 'person', 'other'].map((k) => h('option', { value: k }, k)));
+    ['organization', 'location', 'occupation', 'education', 'person', 'registration', 'other'].map((k) => h('option', { value: k }, k)));
   const value = h('input', { type: 'text', placeholder: 'Add a marker' });
   const polarity = h('select', { style: { width: '9rem' } },
     h('option', { value: '1' }, 'confirms'),
@@ -207,7 +207,7 @@ async function markersStep(id) {
 // --- Step 3 -----------------------------------------------------------------
 
 async function buildStep(id) {
-  const [data, jobs] = await Promise.all([api(`/api/entities/${id}`), api(`/api/jobs?entity_id=${id}&limit=1`)]);
+  const [data, jobs] = await Promise.all([api(`/api/entities/${id}`), api(`/api/jobs?entity_id=${id}&limit=1&kind=full_build`)]);
   const limits = state.settings?.limits ?? { maxDocuments: 4000, maxApiCostUsd: 25 };
   let entity = data.entity;
   let job = jobs.jobs?.[0] ?? null;
@@ -230,7 +230,7 @@ async function buildStep(id) {
   const poll = async () => {
     if (stopped) return;
     try {
-      const [fresh, jobList] = await Promise.all([api(`/api/entities/${id}`), api(`/api/jobs?entity_id=${id}&limit=1`)]);
+      const [fresh, jobList] = await Promise.all([api(`/api/entities/${id}`), api(`/api/jobs?entity_id=${id}&limit=1&kind=full_build`)]);
       entity = fresh.entity;
       job = jobList.jobs?.[0] ?? null;
       paintProgress(fresh.spend?.costUsd ?? 0);

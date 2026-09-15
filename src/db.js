@@ -10,7 +10,9 @@ export const db = new DatabaseSync(config.dbPath);
 db.exec(`
   PRAGMA journal_mode = WAL;
   PRAGMA foreign_keys = ON;
-  PRAGMA busy_timeout = 5000;
+  -- Long enough to wait out the audit's projection worker (§99 C8), which holds
+  -- a write transaction for a few seconds while it rescores a what-if corpus.
+  PRAGMA busy_timeout = 20000;
 `);
 
 /**
@@ -586,6 +588,121 @@ CREATE TABLE IF NOT EXISTS content_sources (
   created_at   TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_content_sources_entity ON content_sources(entity_id, created_at);
+
+-- ===========================================================================
+-- Content audit (§98–§103)
+--
+-- Prefixed audit_ because content_drafts (the generation module's drafts)
+-- already exists. An audit_draft is the text as it was audited, frozen, so a
+-- result always refers to exact words; a generated draft links to it.
+-- ===========================================================================
+
+-- The asset registry: pages published for a client, owned or placed.
+CREATE TABLE IF NOT EXISTS content_assets (
+  id               INTEGER PRIMARY KEY,
+  entity_id        INTEGER NOT NULL REFERENCES entities(id) ON DELETE CASCADE,
+  url              TEXT NOT NULL,
+  host_domain      TEXT,
+  kind             TEXT NOT NULL DEFAULT 'placed' CHECK (kind IN ('owned','placed')),
+  status           TEXT NOT NULL DEFAULT 'live' CHECK (status IN ('live','retired')),
+  content_draft_id INTEGER REFERENCES content_drafts(id) ON DELETE SET NULL,
+  label            TEXT,
+  created_by       INTEGER REFERENCES app_user(id) ON DELETE SET NULL,
+  created_at       TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE (entity_id, url)
+);
+
+-- What an analyst has confirmed is adverse for a client. Coverage tone alone
+-- cannot decide it: "Attorney" can read negative and a scandal "mixed".
+CREATE TABLE IF NOT EXISTS association_polarity (
+  association_id INTEGER PRIMARY KEY REFERENCES associations(id) ON DELETE CASCADE,
+  entity_id      INTEGER NOT NULL REFERENCES entities(id) ON DELETE CASCADE,
+  polarity       TEXT NOT NULL CHECK (polarity IN ('adverse','favourable')),
+  reason         TEXT,
+  set_by         INTEGER REFERENCES app_user(id) ON DELETE SET NULL,
+  set_at         TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS audit_draft (
+  id               INTEGER PRIMARY KEY,
+  entity_id        INTEGER NOT NULL REFERENCES entities(id) ON DELETE CASCADE,
+  asset_id         INTEGER REFERENCES content_assets(id) ON DELETE SET NULL,
+  content_draft_id INTEGER REFERENCES content_drafts(id) ON DELETE SET NULL,
+  source_kind      TEXT NOT NULL CHECK (source_kind IN ('paste','url','generated')),
+  host_domain      TEXT,
+  -- target_url is the client property the text should link to (C13);
+  -- page_url is where an audited live page was read from.
+  target_url       TEXT,
+  page_url         TEXT,
+  title            TEXT,
+  text             TEXT NOT NULL,
+  html             TEXT,
+  text_hash        TEXT NOT NULL,
+  status           TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','running','done','refused','failed')),
+  status_detail    TEXT,
+  extractor        TEXT,
+  job_id           INTEGER,
+  created_by       INTEGER REFERENCES app_user(id) ON DELETE SET NULL,
+  created_at       TEXT NOT NULL DEFAULT (datetime('now')),
+  audited_at       TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_audit_draft_entity ON audit_draft(entity_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_audit_draft_content ON audit_draft(content_draft_id);
+
+CREATE TABLE IF NOT EXISTS audit_draft_fact (
+  id                  INTEGER PRIMARY KEY,
+  draft_id            INTEGER NOT NULL REFERENCES audit_draft(id) ON DELETE CASCADE,
+  association_id      INTEGER REFERENCES associations(id) ON DELETE SET NULL,
+  extracted_claim     TEXT NOT NULL,
+  relationship        TEXT,
+  kind                TEXT,
+  category            TEXT,
+  sentence            TEXT,
+  -- The same factors a corpus evidence row stores, so a re-run on unchanged
+  -- text needs no extraction pass and C8 can project from the stored rows.
+  surface_form            TEXT,
+  evidence                TEXT,
+  relationship_confidence REAL,
+  sentiment               TEXT,
+  token_distance          INTEGER,
+  boundary                TEXT,
+  resolution          TEXT NOT NULL CHECK (resolution IN ('resolved','unsupported')),
+  sources             INTEGER NOT NULL DEFAULT 0,
+  independent_sources INTEGER NOT NULL DEFAULT 0,
+  source_class        TEXT,
+  novel               INTEGER NOT NULL DEFAULT 0,
+  extractor           TEXT NOT NULL,
+  text_hash           TEXT NOT NULL,
+  created_at          TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_audit_fact_draft ON audit_draft_fact(draft_id);
+
+CREATE TABLE IF NOT EXISTS audit_draft_check (
+  draft_id    INTEGER NOT NULL REFERENCES audit_draft(id) ON DELETE CASCADE,
+  check_id    TEXT NOT NULL,
+  result      TEXT NOT NULL CHECK (result IN ('pass','warn','fail','insufficient','not_applicable')),
+  value       REAL,
+  denominator REAL,
+  summary     TEXT NOT NULL,
+  detail_json TEXT NOT NULL DEFAULT '{}',
+  blocking    INTEGER NOT NULL DEFAULT 0,
+  text_hash   TEXT NOT NULL,
+  build       TEXT,
+  checked_at  TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (draft_id, check_id)
+);
+
+CREATE TABLE IF NOT EXISTS audit_draft_signoff (
+  id        INTEGER PRIMARY KEY,
+  draft_id  INTEGER NOT NULL REFERENCES audit_draft(id) ON DELETE CASCADE,
+  check_id  TEXT NOT NULL,
+  user_id   INTEGER REFERENCES app_user(id) ON DELETE SET NULL,
+  user_name TEXT NOT NULL,
+  reason    TEXT,
+  text_hash TEXT NOT NULL,
+  signed_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_audit_signoff_draft ON audit_draft_signoff(draft_id, check_id);
 `;
 
 db.exec(SCHEMA);
@@ -638,7 +755,25 @@ export function all(sql, ...params) {
  * try/catch around BEGIN/COMMIT — but the ingest paths write thousands of rows
  * and doing that outside a transaction is roughly a hundred times slower.
  */
+let savepoints = 0;
+
 export function tx(fn) {
+  // Nested inside another transaction, a savepoint gives the same
+  // all-or-nothing behaviour without SQLite's "transaction within a
+  // transaction" error — which is what lets rolledBack() wrap code that
+  // itself uses tx().
+  if (db.isTransaction) {
+    const name = `sp_${(savepoints += 1)}`;
+    db.exec(`SAVEPOINT ${name}`);
+    try {
+      const out = fn();
+      db.exec(`RELEASE ${name}`);
+      return out;
+    } catch (err) {
+      try { db.exec(`ROLLBACK TO ${name}`); db.exec(`RELEASE ${name}`); } catch { /* already unwound */ }
+      throw err;
+    }
+  }
   db.exec('BEGIN');
   try {
     const out = fn();
@@ -647,6 +782,20 @@ export function tx(fn) {
   } catch (err) {
     try { db.exec('ROLLBACK'); } catch { /* already rolled back */ }
     throw err;
+  }
+}
+
+/**
+ * Runs `fn` inside a transaction that is always rolled back: a what-if that
+ * can write, rescore and read, and leaves nothing behind. `fn` must be
+ * synchronous, so nothing else can observe the uncommitted state.
+ */
+export function rolledBack(fn) {
+  db.exec('BEGIN');
+  try {
+    return fn();
+  } finally {
+    db.exec('ROLLBACK');
   }
 }
 

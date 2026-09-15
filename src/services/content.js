@@ -12,9 +12,10 @@ import { round } from '../util/stats.js';
 import { surnameAnchor } from './serp-coverage.js';
 import { getSource, listSources, sourceFacts, sourceSummary } from './content-source.js';
 import {
-  FORMATS, FORMAT_ORDER, SOURCE_RELATIONS, strategyFor, strengthenStrategy, avoidTermsFor, usableAliases, checkDraft, outlineFor,
-  pickIssues,
+  FORMATS, FORMAT_ORDER, SOURCE_RELATIONS, strategyFor, strengthenStrategy, avoidTermsFor, usableAliases, outlineFor,
+  targetCoverage,
 } from './content-checks.js';
+import { auditContentDraft, approvalForContentDraft, getAudit, addAsset, hashText } from './audit.js';
 
 /**
  * The content builder: drafts that follow from an association's action plan.
@@ -543,14 +544,24 @@ function promptFor(brief, notes) {
 const factsWithNotes = (brief, notes) =>
   notes ? [...brief.facts, { id: 'N1', source: 'notes', passage: notes }] : brief.facts;
 
-const checkOptions = (brief, notes) => ({
-  avoid: brief.avoid ?? [],
-  facts: factsWithNotes(brief, notes),
-  mode: brief.mode,
-  targets: brief.targets ?? [],
-  names: brief.names ?? [],
-  cap: brief.mention_cap ?? MODEL.mentionCap.length,
-});
+// How well a draft carries the associations it was written to strengthen: a
+// reading aid shown beside the draft, not a check. The checks are the audit's
+// (§99), so the builder no longer keeps a second, overlapping set of its own.
+const coverageFor = (brief, title, body) =>
+  body && brief.mode === 'grow'
+    ? { targets: targetCoverage({ title, body }, brief.targets ?? [], { names: brief.names ?? [], cap: brief.mention_cap ?? MODEL.mentionCap.length }) }
+    : null;
+
+// The exact words an audit of a generated draft is run on.
+const draftText = (title, body) => `${title ?? ''}\n\n${body ?? ''}`.trim();
+
+async function reaudit(id, user) {
+  try {
+    await auditContentDraft(id, { user });
+  } catch {
+    // Too short to audit, or no text yet; the draft screen says so.
+  }
+}
 
 export async function createDraft(associationId, input = {}, user = null) {
   const notes = normaliseWhitespace(input.notes ?? '').slice(0, 4000);
@@ -645,7 +656,7 @@ export async function generateInto(id) {
     );
     const data = result?.data ?? {};
     const claims = normaliseClaims(data.claims);
-    const checks = checkDraft({ title: data.title, body: data.body, claims }, checkOptions(brief, inputs.notes));
+    const checks = coverageFor(brief, data.title, String(data.body ?? '').trim());
     run(
       `UPDATE content_drafts
           SET title = ?, body = ?, claims = ?, notes_for_editor = ?, checks = ?, model = ?,
@@ -660,6 +671,7 @@ export async function generateInto(id) {
       result?.cost ?? 0,
       id
     );
+    await reaudit(id, null);
   } catch (err) {
     run(
       `UPDATE content_drafts SET generation_error = ?, updated_at = datetime('now') WHERE id = ?`,
@@ -684,9 +696,14 @@ export function getDraft(id) {
   if (!row) throw notFound('draft not found');
   const brief = parse(row.brief, {});
   const inputs = parse(row.inputs, {});
+  const latestAudit = get(`SELECT id FROM audit_draft WHERE content_draft_id = ? ORDER BY id DESC LIMIT 1`, id);
   return {
     disclaimer: SCORE_DISCLAIMER,
     llm: (({ available, model }) => ({ available, model }))(llmStatus()),
+    audit: latestAudit ? getAudit(latestAudit.id) : null,
+    approval: row.body
+      ? approvalForContentDraft(id, draftText(row.title, row.body))
+      : { ready: false, reason: 'There is no draft text yet.', audit_id: null },
     draft: {
       ...row,
       purpose: brief.purpose ?? 'displace',
@@ -710,20 +727,23 @@ export function listDrafts(entityId) {
       WHERE c.entity_id = ?
       ORDER BY c.updated_at DESC`,
     entityId
-  ).map(({ brief, ...row }) => {
-    const checks = parse(row.checks, null);
+  ).map(({ brief, checks: _coverage, ...row }) => {
+    const audit = get(`SELECT id, status FROM audit_draft WHERE content_draft_id = ? ORDER BY id DESC LIMIT 1`, row.id);
+    const open = audit
+      ? get(`SELECT COUNT(*) AS n FROM audit_draft_check WHERE draft_id = ? AND blocking = 1 AND result != 'pass'`, audit.id).n
+      : null;
     return {
       ...row,
       purpose: parse(brief, {}).purpose ?? 'displace',
       format_label: FORMATS[row.format]?.label ?? row.format,
-      checks: checks ? { ok: checks.ok, blocking: checks.blocking, warnings: checks.warnings } : null,
+      audit: audit ? { id: audit.id, status: audit.status, blocking_open: open } : null,
     };
   });
 }
 
 const STATUSES = ['draft', 'approved', 'published', 'archived'];
 
-export function updateDraft(id, patch = {}, user = null) {
+export async function updateDraft(id, patch = {}, user = null) {
   const current = getDraft(id).draft;
   const title = patch.title !== undefined ? normaliseWhitespace(patch.title) : current.title;
   const body = patch.body !== undefined ? String(patch.body) : current.body;
@@ -735,15 +755,16 @@ export function updateDraft(id, patch = {}, user = null) {
     status = 'draft';
   }
 
-  const checks = body
-    ? checkDraft({ title, body, claims: current.claims }, checkOptions(current.brief, current.inputs.notes))
-    : null;
+  const checks = coverageFor(current.brief, title, body);
 
   let approvedBy = current.approved_by;
   let publishedUrl = current.published_url;
   if (status === 'approved' && current.status !== 'approved') {
     if (!body) throw badRequest('There is no draft text to approve.');
-    if (!checks.ok) throw badRequest(`Fix the ${checks.blocking} blocking issue${checks.blocking === 1 ? '' : 's'} before approving.`);
+    if (edited) throw badRequest('Save your edits and let the audit run before approving.');
+    // §98: approval needs a finished audit of these exact words with nothing blocking.
+    const approval = approvalForContentDraft(id, draftText(title, body));
+    if (!approval.ready) throw badRequest(approval.reason);
     approvedBy = user?.id ?? null;
   }
   if (status === 'published' && current.status !== 'published') {
@@ -766,10 +787,15 @@ export function updateDraft(id, patch = {}, user = null) {
     publishedUrl,
     id
   );
+  if (edited && body) await reaudit(id, user);
+  if (status === 'published' && current.status !== 'published' && publishedUrl) {
+    // §102: a published draft joins the asset registry, so it is audited with the rest.
+    addAsset(current.entity_id, { url: publishedUrl, kind: 'placed', label: title, contentDraftId: id }, user);
+  }
   return getDraft(id);
 }
 
-// --- AI revision of flagged issues -------------------------------------------
+// --- AI revision of audited issues -------------------------------------------
 
 const systemFor = (brief) =>
   brief.mode === 'correct' ? CORRECT_SYSTEM : brief.format === 'source_analysis' ? ANALYSIS_SYSTEM : GROW_SYSTEM;
@@ -804,17 +830,35 @@ const FIX_SCHEMA = {
   },
 };
 
-const checkCounts = (checks) => ({ blocking: checks?.blocking ?? 0, warnings: checks?.warnings ?? 0 });
-
 /**
- * Asks the LLM to resolve chosen issues in a saved draft, then checks the result
- * again. The text it replaces is kept, so one revision can be undone.
+ * Asks the LLM to resolve chosen audit checks in a saved draft. The audit only
+ * reports (§103); this is a separate action a person chooses, its result is
+ * audited again, and the text it replaces is kept so one revision can be undone.
  */
-export async function fixDraft(id, { issues: indices = null, all_blocking: allBlocking = false, checked_at: checkedAt = null } = {}) {
+export async function fixDraft(id, { check_ids: checkIds = [], all_blocking: allBlocking = false, audit_id: auditId = null } = {}, user = null) {
   const current = getDraft(id).draft;
   if (!current.body) throw badRequest('There is no draft text to revise yet.');
-  const picked = pickIssues(current.checks, { indices, allBlocking, checkedAt });
-  if (picked.error) throw new HttpError(picked.error, picked.status);
+  const latest = get(`SELECT id FROM audit_draft WHERE content_draft_id = ? ORDER BY id DESC LIMIT 1`, id);
+  if (!latest) throw badRequest('Audit the draft first, so there is something to fix.');
+  // Pinned to the audit the person was looking at: fixing checks from a list
+  // that has since changed would fix the wrong thing.
+  if (auditId && Number(auditId) !== latest.id) {
+    throw new HttpError('The draft has been audited again since this list was shown. Reload it and try again.', 409);
+  }
+  const audit = getAudit(latest.id);
+  if (audit.draft.text_hash !== hashText(draftText(current.title, current.body))) {
+    throw new HttpError('The text changed since the last audit. Audit it again first.', 409);
+  }
+  if (audit.draft.status !== 'done') throw badRequest('The audit has not finished yet.');
+  const open = audit.checks.filter((c) => ['fail', 'warn'].includes(c.result) && !c.signed_off);
+  const chosen = allBlocking ? open.filter((c) => c.result === 'fail') : open.filter((c) => checkIds.includes(c.check_id));
+  if (!chosen.length) throw badRequest(allBlocking ? 'Nothing is failing.' : 'Choose a check to fix.');
+  const picked = {
+    issues: chosen.flatMap((c) => [
+      { severity: c.result === 'fail' ? 'block' : 'warn', text: `${c.copy.name}: ${c.summary}` },
+      ...(c.detail?.items ?? []).slice(0, 12).map((item) => ({ severity: c.result === 'fail' ? 'block' : 'warn', text: `  ${item}` })),
+    ]),
+  };
 
   const status = llmStatus();
   if (!status.available) {
@@ -864,12 +908,12 @@ export async function fixDraft(id, { issues: indices = null, all_blocking: allBl
       result?.cost ?? 0,
       id
     );
-    return { ...getDraft(id), fix: { changed: false, explanation, before: checkCounts(current.checks), after: checkCounts(current.checks) } };
+    return { ...getDraft(id), fix: { changed: false, explanation } };
   }
 
   const title = normaliseWhitespace(data.title ?? current.title ?? '');
   const claims = normaliseClaims(data.claims);
-  const after = checkDraft({ title, body, claims }, checkOptions(brief, notes));
+  const after = coverageFor(brief, title, body);
   run(
     `UPDATE content_drafts
         SET previous_title = title, previous_body = body, previous_claims = claims, previous_checks = checks,
@@ -879,16 +923,17 @@ export async function fixDraft(id, { issues: indices = null, all_blocking: allBl
     title,
     body,
     JSON.stringify(claims),
-    JSON.stringify(after),
+    after ? JSON.stringify(after) : null,
     explanation || 'Revised by the AI.',
     result?.cost ?? 0,
     id
   );
-  return { ...getDraft(id), fix: { changed: true, explanation, before: checkCounts(current.checks), after: checkCounts(after) } };
+  await reaudit(id, user);
+  return { ...getDraft(id), fix: { changed: true, explanation } };
 }
 
-/** Restores the text an AI revision replaced. One level deep. */
-export function undoFix(id) {
+/** Restores the text an AI revision replaced, and audits it again. One level deep. */
+export async function undoFix(id, user = null) {
   const row = get(`SELECT previous_body FROM content_drafts WHERE id = ?`, id);
   if (!row) throw notFound('draft not found');
   if (!row.previous_body) throw badRequest('There is no AI revision to undo.');
@@ -901,5 +946,6 @@ export function undoFix(id) {
       WHERE id = ?`,
     id
   );
+  await reaudit(id, user);
   return getDraft(id);
 }

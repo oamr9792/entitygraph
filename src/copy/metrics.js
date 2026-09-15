@@ -328,6 +328,39 @@ export const DISCLAIMERS = Object.freeze({
     'These targets follow this tool’s own scoring model, which approximates factors described in Google patents. They are not a guarantee of how Google will treat the page.',
 });
 
+/**
+ * §99, §101 — the content audit's checks in plain words: a name, one sentence
+ * on what it measures, and one line on what to do. The audit engine and screen
+ * read these and never write their own.
+ */
+export const AUDIT_CHECKS = Object.freeze({
+  C1: { name: 'Exclusion breach', what: 'Whether the text names anything marked adverse for this client, even to deny it.', act: 'Remove every mention. This cannot be signed off.' },
+  C2: { name: 'Unsupported claims', what: 'Whether every claim the text makes rests on at least one source the corpus already holds.', act: 'Remove or source each listed claim. This cannot be signed off.' },
+  C3: { name: 'Compliance sign-off', what: 'Whether content about a regulated person has been approved by someone who recorded their name.', act: 'Have the compliance approver sign it off here before it is published.' },
+  C4: { name: 'Source concentration', what: 'How many independent sources the text rests on, counting syndicated copies and pages on the same site once.', act: 'Attribute facts to sources outside the dominant one.' },
+  C5: { name: 'New facts', what: 'Supported facts that no live asset already states and that do not rest on a single document.', act: 'Add facts the published network does not already carry, or reconsider publishing.' },
+  C6: { name: 'Verifiable sourcing', what: 'The share of facts whose best source is a register, professional body or institution rather than the client.', act: 'Cite registers and institutional sources where they exist.' },
+  C7: { name: 'Adverse attribute overlap', what: 'Whether the attributes the text asserts are the same ones that appear in adverse coverage.', act: 'Lead with attributes that adverse coverage does not share.' },
+  C8: { name: 'Projected association change', what: 'How this tool’s association scores would move if the text joined the corpus.', act: 'If nothing moves, the piece will not change how the client is described.' },
+  C9: { name: 'Duplicate risk', what: 'Whether the text is a near copy of its own sources or of another asset.', act: 'Rewrite what copies a source; merge or drop what duplicates a sibling asset.' },
+  C10: { name: 'Subject share', what: 'How much of the text is about the client rather than about other people.', act: 'Cut or refocus the passages that are about someone else.' },
+  C11: { name: 'Repetition waste', what: 'Mentions beyond the point where this tool stops counting them.', act: 'Use that space for something that counts.' },
+  C12: { name: 'Attribution load', what: 'How many sentences are spent on the source rather than on the client.', act: 'Make the client the subject: attribute once, then state.' },
+  C13: { name: 'Link placement', what: 'Whether the client’s own property is linked from the body, early enough to matter.', act: 'Link the client’s property from the body text, near the top.' },
+  C14: { name: 'Host fit', what: 'Whether the host site’s subject and place match the client’s.', act: 'Check that the placement makes sense before commissioning it.' },
+  C15: { name: 'Structured data', what: 'Whether a page on a property you control describes the client in Person markup that matches the asset registry.', act: 'Add or correct the Person JSON-LD and its sameAs links.' },
+});
+
+export const AUDIT_CHECK_ORDER = Object.freeze(Object.keys(AUDIT_CHECKS));
+
+export const AUDIT_RESULTS = Object.freeze({
+  fail: 'Fail',
+  warn: 'Warning',
+  insufficient: 'Not enough to judge',
+  pass: 'Pass',
+  not_applicable: 'Does not apply',
+});
+
 /** §94 — the specific messages for weak and empty states. */
 export const NOTICES = Object.freeze({
   low_coverage: ({ documents }) =>

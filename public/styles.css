@@ -641,10 +641,23 @@ td.num .score-basis.compact { flex-direction: column; align-items: flex-end; gap
 .pick-doc { display: grid; grid-template-columns: 1.4rem 1fr; gap: 0.5rem; padding: 0.6rem; border: 1px solid var(--line-soft); border-radius: 6px; margin-bottom: 0.5rem; cursor: pointer; }
 .pick-doc.active { border-color: var(--accent); }
 .draft-editor { width: 100%; margin-top: 0.6rem; font-family: var(--mono); font-size: 0.86rem; line-height: 1.6; min-height: 22rem; }
-.issues { list-style: none; padding: 0; margin: 0 0 0.6rem; }
-.issues li { padding: 0.3rem 0; border-bottom: 1px solid var(--line-soft); font-size: 0.88rem; }
-
-/* AI fixes on draft checks */
-.issues li.issue { display: flex; gap: 0.5rem; align-items: baseline; }
-.issues li.issue .issue-text { flex: 1 1 auto; }
-.issues li.issue .ai-fix { flex: none; white-space: nowrap; }
+/* §101 content audit */
+.audit-summary { margin: 0; font-size: 0.95rem; line-height: 1.5; }
+.audit-group { margin-bottom: 1rem; }
+.audit-group-h { font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); margin: 0 0 0.4rem; cursor: default; }
+details.audit-group > summary.audit-group-h { cursor: pointer; }
+.audit-check { background: var(--panel); border: 1px solid var(--line); border-left: 3px solid var(--line); border-radius: 6px; padding: 0.6rem 0.85rem; margin-bottom: 0.5rem; }
+.audit-check.fail { border-left-color: var(--bad); }
+.audit-check.warn { border-left-color: var(--warn); }
+.audit-check.pass, .audit-check.signed { border-left-color: var(--good); }
+.audit-check-head { display: flex; flex-wrap: wrap; gap: 0.45rem; align-items: baseline; }
+.audit-check-head .spacer { flex: 1 1 auto; }
+.audit-value { font-family: var(--mono); font-size: 0.82rem; color: var(--muted); }
+.audit-items { margin: 0.3rem 0; padding-left: 1.1rem; font-size: 0.86rem; color: var(--muted); }
+.audit-items li { margin: 0.15rem 0; overflow-wrap: anywhere; }
+.audit-more summary { cursor: pointer; color: var(--accent); }
+.audit-act { color: var(--text); margin: 0.35rem 0 0; }
+.audit-act::before { content: 'What to do: '; color: var(--dim); }
+.audit-text { white-space: pre-wrap; overflow-wrap: anywhere; font-family: var(--sans); font-size: 0.88rem; line-height: 1.6; margin: 0; }
+.good-text { color: var(--good); }
+.bad-text { color: var(--bad); }

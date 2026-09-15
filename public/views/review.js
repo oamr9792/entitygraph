@@ -154,7 +154,7 @@ export async function identityView({ params }) {
   };
 
   const kindSelect = h('select', { style: { width: '10rem' } },
-    ['organization', 'location', 'occupation', 'education', 'person', 'url', 'other'].map((k) => h('option', { value: k }, k)));
+    ['organization', 'location', 'occupation', 'education', 'person', 'url', 'registration', 'other'].map((k) => h('option', { value: k }, k)));
   const valueInput = h('input', { type: 'text', placeholder: 'ABC Capital', style: { width: '16rem' } });
   const polaritySelect = h('select', { style: { width: '9rem' } },
     h('option', { value: '1' }, 'confirms'), h('option', { value: '-1' }, 'rules out'));

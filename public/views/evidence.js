@@ -1,6 +1,7 @@
 import { h, api, fmt, sortableTable, disclaimer, toast, navigate, clear } from '../app.js';
 import { DISCLAIMERS } from '../lib/metrics-ui.js';
 import { weakStatesBanner } from '../lib/weak-states.js';
+import { polarityControl } from './audit.js';
 
 /**
  * §48 — the evidence explorer.
@@ -165,6 +166,7 @@ export async function evidenceView({ params, query }) {
       h('div', { class: 'toolbar' },
         h('button', { class: 'primary', onclick: () => navigate(`#/associations/${association.id}/plan`) }, 'Action plan'),
         h('button', { onclick: () => navigate(`#/associations/${association.id}/content`) }, 'Build content'),
+        polarityControl(association.id),
         h('a', { class: 'btn', href: `/api/associations/${association.id}/evidence?format=csv` }, 'Export CSV'),
         h('button', { onclick: () => navigate(`#/entities/${association.entity_id}`) }, 'Back to dashboard')
       )

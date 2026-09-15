@@ -17,9 +17,11 @@ import { googleRoutes } from './src/routes/google.js';
 import { summaryRoutes } from './src/routes/summary.js';
 import { contentRoutes } from './src/routes/content.js';
 import { googleTraceRoutes } from './src/routes/google-trace.js';
+import { auditRoutes } from './src/routes/audit.js';
+import { scheduleAssetAudits } from './src/services/audit.js';
 
 const router = new Router();
-for (const group of [authRoutes, entityRoutes, analysisRoutes, evidenceRoutes, googleRoutes, googleTraceRoutes, summaryRoutes, contentRoutes]) {
+for (const group of [authRoutes, entityRoutes, analysisRoutes, evidenceRoutes, googleRoutes, googleTraceRoutes, summaryRoutes, contentRoutes, auditRoutes]) {
   router.routes.push(...group.routes);
 }
 
@@ -99,6 +101,8 @@ server.listen(config.port, config.host, () => {
   if (recovered) console.log(`  [jobs] marked ${recovered} interrupted job(s) as failed`);
   const renumbered = renumberLegacySerpRanks();
   if (renumbered) console.log(`  [serp] renumbered ${renumbered} earlier Google snapshot(s) to organic positions`);
+  // §102: live assets are re-audited on a schedule, through the same serial queue as builds.
+  scheduleAssetAudits();
 });
 
 const shutdown = (signal) => {

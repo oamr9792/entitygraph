@@ -19,7 +19,7 @@ export function diagnoseEmptyEntity(entityId) {
   if (!entity) return null;
 
   const job = get(
-    `SELECT * FROM crawl_jobs WHERE entity_id = ? ORDER BY id DESC LIMIT 1`,
+    `SELECT * FROM crawl_jobs WHERE entity_id = ? AND kind = 'full_build' ORDER BY id DESC LIMIT 1`,
     entityId
   );
   if (!job) {

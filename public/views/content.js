@@ -1,5 +1,6 @@
 import { h, api, fmt, navigate, toast, disclaimer, sortableTable } from '../app.js';
 import { DISCLAIMERS, scoreWithBasis, bandChip, bandNote } from '../lib/metrics-ui.js';
+import { auditPanel } from './audit.js';
 
 /**
  * The content builder screens: the builder for one association, a draft, and
@@ -397,7 +398,7 @@ export async function contentBuilderView({ params, query }) {
 // --- Draft ------------------------------------------------------------------
 
 export async function draftView({ params }) {
-  const { draft: d, llm } = await api(`/api/content/${params.id}`);
+  const { draft: d, llm, audit, approval } = await api(`/api/content/${params.id}`);
 
   const save = async (patch, message) => {
     try {
@@ -413,74 +414,45 @@ export async function draftView({ params }) {
   const body = h('textarea', { class: 'draft-editor', rows: '26' });
   body.value = d.body ?? '';
 
+  // Target coverage is the builder's own measurement; the checks are the audit's.
   const checks = d.checks;
 
-  // The AI revises the saved text against the list shown here, so unsaved
-  // edits are saved first rather than silently overwritten.
+  // The AI revises the saved text, so unsaved edits are saved first rather than silently overwritten.
   const unsaved = () => title.value !== (d.title ?? '') || body.value !== (d.body ?? '');
-  const askAi = async (payload, button, busy) => {
-    if (unsaved()) {
-      toast('Save & re-check your edits first, so the AI works on the text you see.', 'error');
-      return;
-    }
-    const label = button.textContent;
-    button.disabled = true;
-    button.textContent = busy;
+
+  // §101: the audit is the one set of checks. The AI buttons in it are a separate, human-chosen action.
+  const runAuditButton = h('button', { type: 'button', class: 'primary' }, 'Run audit');
+  runAuditButton.addEventListener('click', async () => {
+    runAuditButton.disabled = true;
     try {
-      const res = await api(`/api/content/${d.id}/fix`, {
-        method: 'POST',
-        body: { ...payload, checked_at: checks.checked_at },
-      });
-      toast(res.fix.changed
-        ? `Revised. ${res.fix.after.blocking} blocking left. ${res.fix.explanation}`
-        : `No change: ${res.fix.explanation}`, 'success');
+      await api(`/api/content/${d.id}/audit`, { method: 'POST', body: {} });
       navigate(location.hash);
     } catch (err) {
       toast(err.message, 'error');
-      button.disabled = false;
-      button.textContent = label;
+      runAuditButton.disabled = false;
     }
-  };
-  const aiTitle = llm.available
-    ? 'Uses the LLM, charged to this client’s spend. You can undo the revision.'
-    : 'No working LLM key';
-  const issueButton = (issue, index) => {
-    const blocking = issue.severity === 'block';
-    const button = h('button', {
-      type: 'button',
-      class: 'small ghost ai-fix',
-      title: aiTitle,
-      disabled: llm.available ? null : 'disabled',
-    }, blocking ? 'Fix with AI' : 'Check with AI');
-    button.addEventListener('click', () => askAi({ issues: [index] }, button, blocking ? 'Fixing…' : 'Checking…'));
-    return button;
-  };
-  const fixAll = checks?.blocking
-    ? (() => {
-        const button = h('button', { type: 'button', class: 'small', title: aiTitle, disabled: llm.available ? null : 'disabled' },
-          `Fix all ${checks.blocking} with AI`);
-        button.addEventListener('click', () => askAi({ all_blocking: true }, button, 'Fixing…'));
-        return button;
-      })()
-    : null;
-
-  const checksPanel = h('div', { class: 'panel' },
-    h('h2', {}, 'Checks',
-      h('span', { class: 'toolbar', style: { margin: 0 } },
-        fixAll,
-        checks
-          ? h('span', { class: `chip ${checks.ok ? 'good' : 'bad'}` }, checks.ok ? 'nothing blocking' : `${checks.blocking} to fix`)
-          : h('span', { class: 'chip' }, 'no draft yet'))),
-    h('div', { class: 'panel-body' },
-      checks?.issues?.length
-        ? h('ul', { class: 'issues' }, checks.issues.map((i, index) => h('li', { class: `issue ${i.severity}` },
-            h('span', { class: `chip ${i.severity === 'block' ? 'bad' : 'warn'}` }, i.severity === 'block' ? 'fix' : 'check'),
-            h('span', { class: 'issue-text' }, i.text),
-            issueButton(i, index))))
-        : h('p', { class: 'small muted', style: { margin: 0 } },
-            checks ? 'No problems found. A person still needs to read it against the facts before approving.' : 'Checks run once there is draft text.'),
-      h('p', { class: 'small dim', style: { marginBottom: 0 } },
-        'Checked for: the displaced association or its surname, claims with no source, figures with no source, copied runs of words, unconfirmed placeholders, and whether each association to strengthen is mentioned, beside the client’s name and early.')));
+  });
+  const auditStale = audit && approval.reason === 'The text has changed since the last audit. Audit it again.';
+  let wasRunning = audit && ['pending', 'running'].includes(audit.draft.status);
+  const checksPanel = audit && !auditStale
+    ? auditPanel(audit, {
+        contentDraftId: d.id,
+        llmAvailable: llm.available,
+        guard: () => (unsaved() ? 'Save your edits first, so the AI works on the text you see.' : null),
+        // Approval depends on the finished audit, so the page re-renders once it lands.
+        onChange: (fresh) => {
+          const running = ['pending', 'running'].includes(fresh.draft.status);
+          if (wasRunning && !running) navigate(location.hash);
+          wasRunning = running;
+        },
+      })
+    : h('div', { class: 'panel' },
+        h('h2', {}, 'Content audit'),
+        h('div', { class: 'panel-body' },
+          h('p', { style: { marginTop: 0 } }, !d.body
+            ? 'The audit runs once there is draft text.'
+            : auditStale ? 'The text has changed since the last audit.' : 'This draft has not been audited.'),
+          d.body ? runAuditButton : null));
 
   const yesNo = (value) => h('span', { class: `chip ${value ? 'good' : 'bad'}` }, value ? 'yes' : 'no');
   const targetsPanel = checks?.targets?.length
@@ -502,14 +474,18 @@ export async function draftView({ params }) {
     : null;
 
   const statusActions = h('div', { class: 'toolbar', style: { margin: 0 } });
-  const saveButton = h('button', { class: 'primary', type: 'button', onclick: () => save({ title: title.value, body: body.value }, 'Saved and re-checked') }, 'Save & re-check');
+  const saveButton = h('button', { class: 'primary', type: 'button', onclick: () => save({ title: title.value, body: body.value }, 'Saved; the audit runs again') }, 'Save & re-audit');
   statusActions.append(saveButton);
   if (d.status === 'draft' && d.body) {
+    // Approval covers the audited words, so it is only offered for unedited text with nothing blocking.
     statusActions.append(h('button', {
       type: 'button',
-      disabled: checks && !checks.ok ? 'disabled' : null,
-      title: checks && !checks.ok ? 'Fix the blocking issues first' : '',
-      onclick: () => save({ title: title.value, body: body.value, status: 'approved' }, 'Approved'),
+      disabled: approval.ready ? null : 'disabled',
+      title: approval.ready ? 'Nothing blocking in the audit of this text' : approval.reason ?? '',
+      onclick: () => {
+        if (unsaved()) { toast('Save your edits first: the audit covers the saved text.', 'error'); return; }
+        save({ status: 'approved' }, 'Approved');
+      },
     }, 'Approve'));
   }
   if (d.status === 'approved') {
@@ -650,10 +626,13 @@ export async function contentListView({ params }) {
             },
             { key: 'status', label: 'Status', render: (r) => h('span', { class: `chip ${STATUS_CLASS[r.status] ?? ''}` }, r.status) },
             {
-              key: 'checks', label: 'Checks', sortValue: (r) => r.checks?.blocking ?? -1,
-              render: (r) => r.checks
-                ? h('span', { class: `chip ${r.checks.ok ? 'good' : 'bad'}` }, r.checks.ok ? 'clear' : `${r.checks.blocking} to fix`)
-                : h('span', { class: 'chip' }, 'brief only'),
+              key: 'audit', label: 'Audit', sortValue: (r) => r.audit?.blocking_open ?? -1,
+              render: (r) => {
+                if (!r.audit) return h('span', { class: 'chip' }, 'not audited');
+                if (r.audit.status !== 'done') return h('a', { class: `chip ${['refused', 'failed'].includes(r.audit.status) ? 'bad' : 'warn'}`, href: `#/audits/${r.audit.id}` }, r.audit.status);
+                return h('a', { class: `chip ${r.audit.blocking_open ? 'bad' : 'good'}`, href: `#/audits/${r.audit.id}` },
+                  r.audit.blocking_open ? `${r.audit.blocking_open} blocking` : 'nothing blocking');
+              },
             },
             { key: 'updated_at', label: 'Updated', render: (r) => fmt.date(r.updated_at) },
           ], drafts, { initialSort: 'updated_at' }))

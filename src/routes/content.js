@@ -55,7 +55,7 @@ contentRoutes.get('/api/content/:id', (req, res, params) => {
 contentRoutes.patch('/api/content/:id', async (req, res, params) => {
   const user = requireAuth(req);
   const body = await readJson(req);
-  const result = updateDraft(Number(params.id), body, user);
+  const result = await updateDraft(Number(params.id), body, user);
   if (body.status) audit(user.id, `content.${body.status}`, { draft_id: Number(params.id) });
   ok(res, result);
 });
@@ -71,10 +71,10 @@ contentRoutes.post('/api/content/:id/generate', async (req, res, params) => {
 contentRoutes.post('/api/content/:id/fix', async (req, res, params) => {
   const user = requireAuth(req);
   const body = await readJson(req);
-  const result = await fixDraft(Number(params.id), body);
+  const result = await fixDraft(Number(params.id), body, user);
   audit(user.id, 'content.fix', {
     draft_id: Number(params.id),
-    issues: body.all_blocking ? 'all_blocking' : body.issues,
+    checks: body.all_blocking ? 'all_blocking' : body.check_ids,
     changed: result.fix.changed,
   });
   ok(res, result);
@@ -82,7 +82,7 @@ contentRoutes.post('/api/content/:id/fix', async (req, res, params) => {
 
 contentRoutes.post('/api/content/:id/undo', async (req, res, params) => {
   const user = requireAuth(req);
-  const result = undoFix(Number(params.id));
+  const result = await undoFix(Number(params.id), user);
   audit(user.id, 'content.undo_fix', { draft_id: Number(params.id) });
   ok(res, result);
 });
